@@ -1,0 +1,10 @@
+db_config.py
+
+__pycache__/
+
+.env
+
+*.csv
+*.xlsx
+*.txt
+example/
