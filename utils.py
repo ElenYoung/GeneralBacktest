@@ -78,7 +78,7 @@ def calculate_annualized_volatility(returns: pd.Series, periods_per_year: int = 
     return returns.std() * np.sqrt(periods_per_year)
 
 
-def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.03, 
+def calculate_sharpe_ratio(returns: pd.Series, 
                           periods_per_year: int = 252) -> float:
     """
     计算夏普比率
@@ -87,8 +87,6 @@ def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.03,
     -----------
     returns : pd.Series
         收益率序列
-    risk_free_rate : float
-        无风险利率（年化），默认3%
     periods_per_year : int
         每年的周期数，默认252（交易日）
         
@@ -100,7 +98,7 @@ def calculate_sharpe_ratio(returns: pd.Series, risk_free_rate: float = 0.03,
     if len(returns) < 2:
         return 0.0
     
-    excess_returns = returns - risk_free_rate / periods_per_year
+    excess_returns = returns/ periods_per_year
     
     if excess_returns.std() == 0:
         return 0.0
@@ -184,7 +182,7 @@ def calculate_calmar_ratio(nav_series: pd.Series, periods_per_year: int = 252) -
     return ann_return / max_dd
 
 
-def calculate_sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.03,
+def calculate_sortino_ratio(returns: pd.Series,
                            periods_per_year: int = 252) -> float:
     """
     计算索提诺比率（Sortino Ratio）- 只考虑下行波动
@@ -193,8 +191,6 @@ def calculate_sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.03,
     -----------
     returns : pd.Series
         收益率序列
-    risk_free_rate : float
-        无风险利率（年化），默认3%
     periods_per_year : int
         每年的周期数，默认252（交易日）
         
@@ -206,7 +202,7 @@ def calculate_sortino_ratio(returns: pd.Series, risk_free_rate: float = 0.03,
     if len(returns) < 2:
         return 0.0
     
-    excess_returns = returns - risk_free_rate / periods_per_year
+    excess_returns = returns/periods_per_year
     
     # 只考虑负收益的波动
     downside_returns = excess_returns[excess_returns < 0]
@@ -613,7 +609,7 @@ def calculate_monthly_returns(nav_series: pd.Series) -> pd.DataFrame:
         月度收益率统计
     """
     # 重采样到月度
-    monthly_nav = nav_series.resample('M').last()
+    monthly_nav = nav_series.resample('ME').last()
     monthly_returns = monthly_nav.pct_change().dropna()
     
     stats = {
@@ -663,8 +659,8 @@ def calculate_all_metrics(nav_series: pd.Series, benchmark_nav: Optional[pd.Seri
         '累计收益率': nav_series.iloc[-1] / nav_series.iloc[0] - 1,
         '年化收益率': calculate_annualized_return(nav_series, periods_per_year),
         '年化波动率': calculate_annualized_volatility(returns, periods_per_year),
-        '夏普比率': calculate_sharpe_ratio(returns, risk_free_rate, periods_per_year),
-        '索提诺比率': calculate_sortino_ratio(returns, risk_free_rate, periods_per_year),
+        '夏普比率': calculate_sharpe_ratio(returns, periods_per_year),
+        '索提诺比率': calculate_sortino_ratio(returns, periods_per_year),
         '卡玛比率': calculate_calmar_ratio(nav_series, periods_per_year),
         '胜率': calculate_win_rate(returns),
         'VaR (95%)': calculate_var(returns, 0.95),
