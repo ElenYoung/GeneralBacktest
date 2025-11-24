@@ -895,41 +895,6 @@ class GeneralBacktest:
             plt.savefig(save_path, bbox_inches='tight')
         plt.show()
 
-    def plot_turnover_analysis(self, figsize: Tuple[int, int] = (12, 5), save_path: str = None) -> None:
-        """
-        绘制换手率分析图
-        """
-        if self.turnover_records is None or self.turnover_records.empty:
-            print("No turnover records to plot.")
-            return
-            
-        self._set_plotting_style()
-        
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        dates = self.turnover_records['date']
-        turnover = self.turnover_records['turnover']
-        
-        ax.bar(dates, turnover, width=2, color='#ff7f0e', alpha=0.7, label='Turnover Rate')
-        
-        # 添加平均换手率线
-        avg_turnover = turnover.mean()
-        ax.axhline(avg_turnover, color='red', linestyle='--', alpha=0.8, 
-                  label=f'Avg Turnover: {avg_turnover:.2%}')
-        
-        ax.set_ylabel('Turnover Rate')
-        ax.set_title('Portfolio Turnover Analysis')
-        ax.legend()
-        ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0))
-        
-        # 格式化X轴日期
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%Y-%m'))
-        
-        if save_path:
-            plt.savefig(save_path, bbox_inches='tight')
-        plt.show()
-
-
     def plot_drawdown(self, figsize: Tuple[int, int] = (12, 6)) -> None:
         """
         绘制回撤曲线 (独立)
@@ -1271,11 +1236,11 @@ class GeneralBacktest:
         
         # Add average lines
         avg_turnover = self.turnover_records['turnover'].mean()
-        avg_turnover_trade = self.turnover_records['turnover'].replace(0, np.nan).mean()
+        # avg_turnover_trade = self.turnover_records['turnover'].replace(0, np.nan).mean()
         ax.axhline(y=avg_turnover, color='blue', linestyle='--',
                   linewidth=2, label=f'Avg Turnover (Period): {avg_turnover:.2%}')
-        ax.axhline(y=avg_turnover_trade, color='green', linestyle='--',
-                  linewidth=2, label=f'Avg Turnover (Trade): {avg_turnover_trade:.2%}')
+        # ax.axhline(y=avg_turnover_trade, color='green', linestyle='--',
+        #           linewidth=2, label=f'Avg Turnover (Trade): {avg_turnover_trade:.2%}')
         
         ax.set_xlabel('Date', fontsize=12)
         ax.set_ylabel('Turnover Rate', fontsize=12)

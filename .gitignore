@@ -1,5 +1,7 @@
 db_config.py
 
+*.out
+
 __pycache__/
 
 .env

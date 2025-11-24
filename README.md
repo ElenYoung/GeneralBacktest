@@ -45,22 +45,23 @@
 
 ### 📈 专业级可视化 (13个图表)
 
-#### 标准图表 (8个)
-- 📈 **净值曲线** - 带调仓点标注
-- 📉 **回撤曲线** - 最大回撤高亮
-- 📊 **策略vs基准** - 归一化对比
-- 💹 **超额收益** - 正负收益分色填充
-- 📍 **交易点位分析** - 净值+成本双视图
-- 🔥 **持仓热力图** - 资产权重时序热力图
-- 📊 **换手率分析** - 含平均线标注
-- 📱 **综合分析面板** - 一键生成完整报告
+#### 标准图表 (10个)
+- 📈 **净值曲线** (`plot_nav_curve`) - 含回撤子图与最大回撤区间高亮
+- 📉 **回撤曲线** (`plot_drawdown`) - 独立回撤分析
+- 📊 **策略vs基准** (`plot_nav_vs_benchmark`) - 净值对比 + 超额收益曲线
+- 💹 **超额收益** (`plot_excess_returns`) - 累计超额收益分析
+- 📍 **交易点位** (`plot_trade_points`) - 净值曲线叠加调仓点
+- 🔥 **持仓热力图** (`plot_position_heatmap`) - 智能排序，优先展示核心资产
+- 📅 **月度热力图** (`plot_monthly_returns_heatmap`) - 月度/年度收益概览
+- 📊 **换手率分析** (`plot_turnover_analysis`) - 时序换手率与均值线
+- 📋 **指标表格** (`plot_metrics_table`) - 导出专业指标表格图片
+- 📱 **综合看板** (`plot_dashboard`) - 一页展示核心图表与指标
 
-#### 扩展分析 (5个)
+#### 扩展分析
 - 📉 **权重时间序列** - 各资产权重演变
 - 📊 **持仓集中度** - HHI指数趋势
 - 🔍 **单资产详细分析** - 权重+价格+变化三合一
 - 📈 **日度收益分布** - 直方图统计
-- 💼 **月度收益统计** - 时间维度分析
 
 ### 🎯 新增功能
 
@@ -127,7 +128,8 @@ position_matrix = bt.get_position_matrix() # 矩阵格式
 position_changes = bt.get_position_changes() # 权重变化
 
 # 5. 可视化
-bt.plot_all(figsize=(20, 16))  # 综合分析面板
+bt.plot_dashboard(save_path='dashboard.png')  # 综合分析面板
+# bt.plot_all() # plot_dashboard 的别名
 ```
 
 ### 数据格式要求
@@ -341,14 +343,17 @@ get_position_changes() -> pd.DataFrame
 
 | 方法 | 说明 |
 |------|------|
-| `plot_nav_curve()` | 策略净值曲线（含调仓点） |
-| `plot_drawdown()` | 回撤曲线 |
-| `plot_nav_vs_benchmark()` | 策略vs基准对比 |
-| `plot_excess_returns()` | 超额收益曲线 |
-| `plot_trade_points()` | 交易点位分析（双图） |
-| `plot_position_heatmap()` | 持仓权重热力图 |
+| `plot_nav_curve()` | 策略净值曲线（含回撤子图与高亮） |
+| `plot_drawdown()` | 独立回撤曲线 |
+| `plot_nav_vs_benchmark()` | 策略vs基准对比（含超额收益） |
+| `plot_excess_returns()` | 累计超额收益曲线 |
+| `plot_trade_points()` | 交易点位分析 |
+| `plot_position_heatmap()` | 持仓权重热力图（智能排序） |
+| `plot_monthly_returns_heatmap()` | 月度/年度收益热力图 |
 | `plot_turnover_analysis()` | 换手率分析 |
-| `plot_all()` | 综合分析面板（6子图） |
+| `plot_metrics_table()` | 性能指标表格图片 |
+| `plot_dashboard()` | 综合分析面板（含NAV、回撤、指标、换手率） |
+| `plot_all()` | `plot_dashboard` 的别名 |
 
 **所有可视化方法都支持 `figsize` 参数调整图表大小。**
 
@@ -498,6 +503,16 @@ GeneralBacktest/
 **A:** 通过`benchmark_weights`参数传入，格式与策略权重相同。
 
 ## 📝 更新日志
+
+### v1.1.0 (2024-11-25)
+- 🎨 **绘图系统重构**
+  - 全面升级为专业出版级图表风格
+  - 新增 `plot_dashboard` 综合看板
+  - 新增 `plot_metrics_table` 指标表格导出
+  - 新增 `plot_monthly_returns_heatmap` 月度收益热力图
+  - 优化 `plot_position_heatmap` 展示逻辑，优先展示核心资产
+  - 优化 `plot_nav_curve` 和 `plot_nav_vs_benchmark` 的展示细节
+  - 所有图表标签国际化（英文），解决字体兼容性问题
 
 ### v1.0.0 (2024-11-24)
 - ✨ **新增功能**
