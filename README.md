@@ -304,13 +304,13 @@ GeneralBacktest(start_date: str, end_date: str)
 
 ## 👨‍💻 作者
 
-Your Name - your.email@example.com
+Elen Young - elenyoung@example.com
 
 ## 🔗 相关链接
 
-- [GitHub 仓库](https://github.com/yourusername/GeneralBacktest)
-- [问题反馈](https://github.com/yourusername/GeneralBacktest/issues)
-- [更新日志](https://github.com/yourusername/GeneralBacktest/releases)
+- [GitHub 仓库](https://github.com/ElenYoung/GeneralBacktest)
+- [问题反馈](https://github.com/ElenYoung/GeneralBacktest/issues)
+- [更新日志](https://github.com/ElenYoung/GeneralBacktest/releases)
 
 ## ⚠️ 免责声明
 
