@@ -96,8 +96,13 @@ def generate_quarterly_weights(dates, stock_codes, seed=42):
     np.random.seed(seed)
     
     # 选择季度调仓日（每季度第一个交易日）
-    rebalance_dates = pd.date_range(start=dates[0], end=dates[-1], freq='QS')
-    rebalance_dates = [d for d in rebalance_dates if d in dates]
+    # 使用实际交易日期，每季度选择第一个可用的交易日
+    dates_sorted = pd.to_datetime(sorted(dates))
+    
+    # 按季度分组，选择每个季度的第一个交易日
+    dates_df = pd.DataFrame({'date': dates_sorted})
+    dates_df['quarter'] = dates_df['date'].dt.to_period('Q')
+    rebalance_dates = dates_df.groupby('quarter')['date'].first().tolist()
     
     weights_data = []
     

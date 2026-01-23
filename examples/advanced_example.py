@@ -64,9 +64,10 @@ def generate_momentum_strategy(price_data, lookback=60, n_select=5):
     """
     dates = sorted(price_data['date'].unique())
     
-    # 月度调仓
-    rebalance_dates = pd.date_range(start=dates[0], end=dates[-1], freq='MS')
-    rebalance_dates = [d for d in rebalance_dates if d in dates]
+    # 月度调仓 - 使用实际交易日期，每月选择第一个可用的交易日
+    dates_df = pd.DataFrame({'date': pd.to_datetime(dates)})
+    dates_df['month'] = dates_df['date'].dt.to_period('M')
+    rebalance_dates = dates_df.groupby('month')['date'].first().tolist()
     
     weights_data = []
     
@@ -106,9 +107,10 @@ def generate_equal_weight_benchmark(price_data):
     dates = sorted(price_data['date'].unique())
     stock_codes = price_data['code'].unique()
     
-    # 季度调仓
-    rebalance_dates = pd.date_range(start=dates[0], end=dates[-1], freq='QS')
-    rebalance_dates = [d for d in rebalance_dates if d in dates]
+    # 季度调仓 - 使用实际交易日期，每季度选择第一个可用的交易日
+    dates_df = pd.DataFrame({'date': pd.to_datetime(dates)})
+    dates_df['quarter'] = dates_df['date'].dt.to_period('Q')
+    rebalance_dates = dates_df.groupby('quarter')['date'].first().tolist()
     
     weights_data = []
     weight = 1.0 / len(stock_codes)
