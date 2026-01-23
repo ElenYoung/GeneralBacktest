@@ -1,0 +1,2 @@
+# This file ensures the output_demo directory is tracked by git
+# The actual output files (images) are included via .gitignore rules

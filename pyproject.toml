@@ -1,0 +1,61 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "GeneralBacktest"
+version = "1.0.0"
+description = "一个灵活高效的量化策略回测框架，支持多资产组合、任意调仓频率、向量化计算和丰富的性能分析"
+readme = "README.md"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+license = {text = "MIT"}
+requires-python = ">=3.8"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Financial and Insurance Industry",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+    "Topic :: Scientific/Engineering",
+]
+keywords = ["backtest", "quantitative", "trading", "finance", "portfolio"]
+
+dependencies = [
+    "numpy>=1.20.0",
+    "pandas>=1.3.0",
+    "matplotlib>=3.3.0",
+]
+
+[project.optional-dependencies]
+database = [
+    "quantchdb>=0.1.0",
+]
+excel = [
+    "openpyxl>=3.0.0",
+]
+full = [
+    "quantchdb>=0.1.0",
+    "openpyxl>=3.0.0",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/yourusername/GeneralBacktest"
+"Bug Reports" = "https://github.com/yourusername/GeneralBacktest/issues"
+"Source" = "https://github.com/yourusername/GeneralBacktest"
+"Documentation" = "https://github.com/yourusername/GeneralBacktest#readme"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["GeneralBacktest*"]
+exclude = ["tests*"]
