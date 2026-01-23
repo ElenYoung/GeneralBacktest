@@ -146,6 +146,7 @@ db_config.py
 PROJECT_SUMMARY.md
 START_HERE.md
 QUICK_COMMANDS.md
+PYPI_UPLOAD_GUIDE.md
 
 # Keep output_demo but ignore its contents except images
 !output_demo/
