@@ -15,6 +15,6 @@ GeneralBacktest - 通用量化策略回测框架
 
 from .backtest import GeneralBacktest
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 __author__ = 'Elen Young'
 __all__ = ['GeneralBacktest']
