@@ -251,7 +251,7 @@ results = bt.run_backtest(
     weights_data=weights_data,
     price_data=price_data,
     benchmark_weights=benchmark_weights,
-    benchmark_name="沪深300",
+    benchmark_name="HS300",
     ...
 )
 ```
@@ -304,7 +304,7 @@ GeneralBacktest(start_date: str, end_date: str)
 
 ## 👨‍💻 作者
 
-Elen Young - elenyoung@example.com
+Elen Young - yang13515360252@example.com
 
 ## 🔗 相关链接
 
