@@ -113,7 +113,7 @@ bt.plot_monthly_returns()  # 月度收益热力图
 
 ### 高级用法 - ETF 数据库回测（需要数据库配置）
 
-> **注意**：`run_backtest_ETF()` 和 `run_backtest_stock()` 方法需要特定的数据库配置（`db_config`），这些方法主要为特定用户群体（如课程学员）提供。普通用户建议使用 `run_backtest()` 方法。
+> **注意**：`run_backtest_ETF()` 和 `run_backtest_stock()` 方法需要特定的数据库配置（`db_config`），这些方法需要有特定数据库支持。一般建议使用 `run_backtest()` 方法。
 
 ```python
 from GeneralBacktest import GeneralBacktest
