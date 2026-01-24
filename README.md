@@ -142,8 +142,8 @@ bt = GeneralBacktest(start_date="2023-01-01", end_date="2023-12-31")
 results = bt.run_backtest_ETF(
     etf_db_config=db_config,
     weights_data=weights_data,
-    buy_price='OpenPrice',
-    sell_price='ClosePrice',
+    buy_price='open',
+    sell_price='open',
     transaction_cost=[0.001, 0.001],
     rebalance_threshold=0.005
 )

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "GeneralBacktest"
-version = "1.0.0"
+version = "1.0.1"
 license = {text = "MIT"}
 description = "一个灵活高效的量化策略回测框架，支持多资产组合、任意调仓频率、向量化计算和丰富的性能分析"
 readme = "README.md"
