@@ -694,23 +694,12 @@ class GeneralBacktest:
 
         sql = f"""
         WITH
-            cp as (
-                SELECT Symbol, argMin(ComparablePrice, TradingDate) as init_cp,
-                argMin(ClosePrice, TradingDate) as init_clsp
-                FROM etf.etf_daily
-                WHERE ComparablePrice IS NOT NULL
-                GROUP BY Symbol
-            ),
-
             prices as (
-                SELECT Symbol as code, TradingDate as date, OpenPrice, HighPrice, LowPrice, ClosePrice, ComparablePrice,
-                  ComparablePrice/init_cp*init_clsp/ClosePrice as adj_factor
-                FROM etf.etf_daily daily
-                LEFT JOIN cp ON cp.Symbol == daily.Symbol
-                WHERE and(TradingDate>='{self.start_date.strftime(format='%Y-%m-%d')}', 
-                          TradingDate<='{self.end_date.strftime(format='%Y-%m-%d')}',
-                          Filling=0)
-                ORDER BY Symbol, TradingDate
+                SELECT code, date, open, close, amount/vol as vwap, adj_factor
+                FROM etf.etf_day daily
+                WHERE and(date>='{self.start_date.strftime(format='%Y-%m-%d')}', 
+                          date<='{self.end_date.strftime(format='%Y-%m-%d')}')
+                ORDER BY code, date
             )
 
         SELECT * FROM prices
@@ -750,15 +739,15 @@ class GeneralBacktest:
 
         db = ClickHouseDatabase(config=stock_db_config, terminal_log=False)
 
+
         sql = f"""
         WITH
             prices as (
-                SELECT Stkcd as code, Trddt as date, Opnprc as open, Hiprc as high, Loprc as low, Clsprc as close,
-                  Adjprcwd as adj_price, adj_factor_f as adj_factor
-                FROM stocks.daily_with_adj 
-                WHERE and(Trddt>='{self.start_date.strftime(format='%Y-%m-%d')}', 
-                          Trddt<='{self.end_date.strftime(format='%Y-%m-%d')}')
-                ORDER BY Stkcd, Trddt
+                SELECT  * 
+                FROM stocks.daily_adj_tushare2
+                WHERE and(date>='{self.start_date.strftime(format='%Y-%m-%d')}', 
+                          date<='{self.end_date.strftime(format='%Y-%m-%d')}')
+                ORDER BY code, date
             )
 
         SELECT * FROM prices
