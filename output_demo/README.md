@@ -1,42 +1,62 @@
 # Output Demo
 
-本目录包含 GeneralBacktest 框架生成的示例输出图表。
+本目录包含 GeneralBacktest 框架生成的示例输出图表和数据文件。
 
-## 📊 当前包含的图表
+## 📊 v1.1.0 完整演示输出
 
-### 基础示例输出
+运行 `complete_demo.py` 生成的完整演示文件（推荐查看）：
+
+### 核心图表（9个PNG文件）
+- **`demo_standard_nav.png`** - 标准回测净值曲线（归一化）
+- **`demo_cash_nav.png`** - 现金回测净值曲线（实际金额）
+- **`demo_log_nav.png`** - 对数坐标净值曲线（避免初始平坦段）
+- **`demo_dual_nav.png`** - 线性/对数坐标对比图
+- **`demo_standard_monthly.png`** - 月度收益热力图
+- **`demo_standard_positions.png`** - 持仓权重热力图
+- **`demo_cash_turnover.png`** - 换手率分析
+- **`demo_standard_dashboard.png`** - 标准回测综合仪表板
+- **`demo_cash_dashboard.png`** - 现金回测综合仪表板
+
+### 数据文件（4个CSV文件）
+- **`demo_standard_nav_series.csv`** - 标准回测每日NAV
+- **`demo_cash_nav_series.csv`** - 现金回测每日NAV（¥1,000,000 → ¥3,030,950）
+- **`demo_cash_series.csv`** - 现金余额变化
+- **`demo_cash_trades.csv`** - 完整交易记录（6笔交易）
+
+**📖 详细说明**: 查看 [README_v1.1.0.md](./README_v1.1.0.md) 获取完整文档
+
+## 📊 基础示例输出
+
+运行 `basic_example.py` 生成的图表：
 - `basic_nav_curve.png` - 净值曲线和回撤分析
 - `basic_monthly_returns.png` - 月度收益热力图
 - `basic_positions.png` - 持仓变化热力图
 
-## 🚀 生成更多图表
+## 🚀 生成图表
 
-运行示例代码可以生成更多图表：
+运行示例代码生成图表：
 
 ```bash
-# 运行基础示例
+# v1.1.0 完整演示（推荐）
+python examples/complete_demo.py
+
+# 基础示例
 python examples/basic_example.py
 
-# 运行高级示例（生成更多图表）
+# 高级示例
 python examples/advanced_example.py
 ```
 
-高级示例会生成：
-- 综合分析仪表板
-- 策略与基准对比
-- 超额收益分析
-- 换手率分析
-- Excel 数据报告等
-
 ## 📝 注意事项
 
-- 这些图表是使用随机生成的数据创建的
-- 每次运行示例都会覆盖现有图表
+- 所有图表使用随机生成的模拟数据
+- 每次运行示例会覆盖现有图表
 - 仅作为演示用途，实际策略表现会有所不同
+- v1.1.0 解决了之前版本的图表显示问题（水平线、弹窗、中文编码）
 
 ## 🎨 自定义输出
 
-你可以在代码中自定义图表的保存路径：
+在代码中自定义图表保存路径：
 
 ```python
 bt.plot_nav_curve(save_path='custom_path/my_chart.png')

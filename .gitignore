@@ -147,11 +147,14 @@ PROJECT_SUMMARY.md
 START_HERE.md
 QUICK_COMMANDS.md
 PYPI_UPLOAD_GUIDE.md
+Update_changelog.md
 
 # Keep output_demo but ignore its contents except images
 !output_demo/
 output_demo/*
 !output_demo/*.png
 !output_demo/*.jpg
+!output_demo/*.csv
 !output_demo/.gitkeep
 !output_demo/README.md
+!output_demo/README_v1.1.0.md

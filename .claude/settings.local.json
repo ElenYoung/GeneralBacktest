@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(del:*)",
+      "Bash(ls:*)",
+      "Bash(awk 'NR>=1550 && NR<=1600' backtest.py)",
+      "Bash(awk:*)"
+    ]
+  }
+}

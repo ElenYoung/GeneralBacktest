@@ -4,8 +4,14 @@
 """
 
 import numpy as np
-import pandas as pd
 from typing import Tuple, Dict, Optional
+
+# 动态导入 pandas
+try:
+    import pandas as pd
+except ImportError as e:
+    print(f"ERROR: Failed to import pandas: {e}")
+    raise
 
 
 # ==================== 性能指标计算函数（向量化） ====================
