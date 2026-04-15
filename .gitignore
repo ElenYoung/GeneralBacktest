@@ -160,3 +160,9 @@ output_demo/*
 !output_demo/.gitkeep
 !output_demo/README.md
 !output_demo/README_v1.1.0.md
+# Allow subdirectories
+!output_demo/standard_demo/
+!output_demo/cash_demo/
+!output_demo/advanced_demo/
+!output_demo/t0_demo/
+!output_demo/*_demo/
