@@ -178,24 +178,24 @@ def main():
     
     # 5. 生成完整的图表集
     print("\n[5/5] 生成可视化报告...")
-    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_demo')
+    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_demo', 'advanced_demo')
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # 综合报告
     bt_strategy.plot_all(save_path=os.path.join(output_dir, 'advanced_dashboard.png'))
-    
+
     # 策略对比
     bt_strategy.plot_nav_vs_benchmark(save_path=os.path.join(output_dir, 'advanced_comparison.png'))
-    
+
     # 超额收益
     bt_strategy.plot_excess_returns(save_path=os.path.join(output_dir, 'advanced_excess_returns.png'))
-    
+
     # 换手率分析
     bt_strategy.plot_turnover_analysis(save_path=os.path.join(output_dir, 'advanced_turnover.png'))
-    
+
     # 月度收益
     bt_strategy.plot_monthly_returns_heatmap(save_path=os.path.join(output_dir, 'advanced_monthly_returns.png'))
-    
+
     print(f"\n✓ 所有图表已保存到：{output_dir}")
     
     # 6. 导出详细数据
@@ -231,17 +231,18 @@ def main():
     print("高级示例完成！")
     print("=" * 70)
     print("\n主要发现：")
-    
+
     # 简单总结
     strategy_return = bt_strategy.metrics['累计收益率']
     benchmark_return = bt_strategy.metrics.get('基准累计收益率', 0)
     excess_return = bt_strategy.metrics.get('超额收益率', 0)
-    
+
     print(f"  - 动量策略收益：{strategy_return:.2%}")
     print(f"  - 基准收益：{benchmark_return:.2%}")
     print(f"  - 超额收益：{excess_return:.2%}")
     print(f"  - 夏普比率：{bt_strategy.metrics['夏普比率']:.3f}")
     print(f"  - 最大回撤：{bt_strategy.metrics['最大回撤']:.2%}")
+    print(f"\n  输出目录：output_demo/advanced_demo/")
 
 
 if __name__ == '__main__':

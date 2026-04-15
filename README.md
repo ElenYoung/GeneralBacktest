@@ -29,6 +29,7 @@ It supports arbitrary rebalancing schedules, realistic trading details, vectoriz
 - Dynamic total exposure control via `position_ratio_col` (v1.1.0).
 - Cash-based backtest mode via `run_backtest_with_cash` (v1.1.0).
 - Enhanced visualization (log-scale NAV and dual-scale NAV, v1.1.0).
+- T+0 (intraday round-trip) backtesting via `TBacktest.run_t0_backtest()` (v1.2.0).
 - 15+ performance metrics and 10+ plotting utilities.
 
 ## Installation
@@ -151,6 +152,46 @@ print(f"Cash Ratio: {results['metrics']['Cash Ratio']:.2%}")
 
 `run_backtest_ETF()` and `run_backtest_stock()` need a valid database config. For general usage, `run_backtest()` is recommended.
 
+### T+0 Intraday Round-Trip (`TBacktest`)
+
+`TBacktest` supports same-day sell → buy cycles (T+0 strategies). `weight` is the **target position**, not the trading amount. The `phase` column controls intraday execution order:
+
+```python
+from GeneralBacktest import TBacktest
+
+tb = TBacktest(start_date='2024-01-01', end_date='2024-12-31')
+
+results = tb.run_t0_backtest(
+    weights_data=t0_weights,   # includes 'phase' column
+    price_data=price_data,
+    buy_price='close',        # configurable
+    sell_price='open',        # configurable
+    adj_factor_col='adj_factor',
+    close_price_col='close',
+    transaction_cost=[0.001, 0.001]
+)
+
+# T+0 dedicated visualization
+tb.plot_intraday_trades()          # NAV + intraday trade markers
+tb.plot_t0_returns_breakdown()     # sell vs buy return decomposition
+tb.plot_nav_vs_benchmark()         # strategy vs benchmark comparison
+```
+
+Weights data format with `phase` column:
+
+| date | code | weight | phase |
+|------|------|--------|-------|
+| 2024-01-02 | stock_A | 1.0 | NaN | (build position at close) |
+| 2024-01-03 | stock_A | 0.5 | sell | (open sell, target → 50%) |
+| 2024-01-03 | stock_A | 1.0 | buy | (close buy, target → 100%) |
+
+A-share compliance is enforced:
+- `buy_phase` must follow `sell_phase` in time order
+- Net buy on each day: total sell ≤ total buy (no naked shorting)
+- Target positions capped at [0, 1]
+
+T+0-specific metrics: sell win rate, buy win rate, sell/buy cumulative return, return contribution ratio, average commission rate.
+
 ## Core Concepts
 
 ### Total Exposure Control
@@ -194,12 +235,16 @@ bt.plot_all()
 bt.plot_nav_curve()                    # linear scale
 bt.plot_nav_curve(log_scale=True)      # log scale (v1.1.0)
 bt.plot_nav_curve_dual()               # dual linear/log (v1.1.0)
-bt.plot_comparison()
-bt.plot_excess_returns()
-bt.plot_monthly_returns()
-bt.plot_turnover()
-bt.plot_positions()
-bt.plot_return_distribution()
+bt.plot_nav_vs_benchmark()             # strategy vs benchmark
+bt.plot_excess_returns()               # excess return analysis
+bt.plot_monthly_returns()              # monthly heatmap
+bt.plot_turnover()                     # turnover analysis
+bt.plot_position_heatmap()             # holdings heatmap
+bt.plot_return_distribution()          # return distribution
+
+# T+0 specific (TBacktest)
+tb.plot_intraday_trades()             # NAV + trade markers
+tb.plot_t0_returns_breakdown()        # sell vs buy decomposition
 ```
 
 ## API Overview
@@ -212,10 +257,11 @@ GeneralBacktest(start_date: str, end_date: str)
 
 ### Main Methods
 
-- `run_backtest(...)`
-- `run_backtest_ETF(...)`
-- `run_backtest_stock(...)`
-- `run_backtest_with_cash(...)`
+- `run_backtest(...)` — standard weight-based backtest
+- `run_backtest_ETF(...)` — ETF data from database
+- `run_backtest_stock(...)` — stock data from database
+- `run_backtest_with_cash(...)` — cash-constrained execution
+- `TBacktest.run_t0_backtest(...)` — T+0 intraday round-trip
 
 ### Plotting and Reporting
 
@@ -232,11 +278,12 @@ GeneralBacktest(start_date: str, end_date: str)
 
 ## Backward Compatibility
 
-All v1.1.0 features are incremental and backward compatible:
+All v1.1.0 and v1.2.0 features are incremental and backward compatible:
 
 - `position_ratio_col` in `run_backtest()` defaults to `None`.
 - `log_scale` in `plot_nav_curve()` defaults to `False`.
-- `run_backtest_with_cash()` and `plot_nav_curve_dual()` are new methods.
+- `run_backtest_with_cash()` and `plot_nav_curve_dual()` are new v1.1.0 methods.
+- `TBacktest` is a new v1.2.0 class — it does not affect existing `GeneralBacktest` usage.
 
 ## Contributing
 

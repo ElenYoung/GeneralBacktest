@@ -168,10 +168,8 @@ def main():
     
     # 5. 生成图表
     print("\n生成可视化图表...")
-    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_demo')
+    output_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'output_demo', 'standard_demo')
     os.makedirs(output_dir, exist_ok=True)
-    
-    # 保存图表
     bt.plot_nav_curve(save_path=os.path.join(output_dir, 'basic_nav_curve.png'))
     bt.plot_monthly_returns_heatmap(save_path=os.path.join(output_dir, 'basic_monthly_returns.png'))
     bt.plot_position_heatmap(save_path=os.path.join(output_dir, 'basic_positions.png'))

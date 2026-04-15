@@ -38,9 +38,12 @@ except ImportError:
         calculate_transaction_costs, calculate_monthly_returns, calculate_adjusted_weights
     )
 
-# 设置中文字体支持
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial']
-plt.rcParams['axes.unicode_minus'] = False
+# 设置中文字体支持（仅在 matplotlib 可用时）
+try:
+    plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'Arial']
+    plt.rcParams['axes.unicode_minus'] = False
+except NameError:
+    pass  # matplotlib 未安装
 
 
 def _display_plot(save_path: str = None, show: bool = False) -> None:
@@ -1279,7 +1282,7 @@ class GeneralBacktest:
         # 自定义 rcParams 以获得更好的视觉效果
         plt.rcParams.update({
             'font.family': ['sans-serif'],
-            'font.sans-serif': ['Arial', 'SimHei', 'Microsoft YaHei', 'DejaVu Sans'], # 优先使用英文字体，中文后备
+            'font.sans-serif': ['Arial', 'SimHei', 'Microsoft YaHei', 'DejaVu Sans'],
             'axes.unicode_minus': False,
             'axes.grid': True,
             'grid.alpha': 0.3,
@@ -1578,19 +1581,19 @@ class GeneralBacktest:
         ax1.set_title('Strategy vs Benchmark')
         ax1.legend(loc='upper left')
         ax1.grid(True, alpha=0.3)
-        
+
         # Bottom: Relative Strength (Strategy / Benchmark)
         # Or Excess Return (Strategy - Benchmark) - Let's use Cumulative Excess Return as it's more standard
         s_ret = self.daily_nav.pct_change().fillna(0)
         b_ret = benchmark_nav.pct_change().fillna(0)
         excess_ret = s_ret - b_ret
         cum_excess = (1 + excess_ret).cumprod() - 1
-        
+
         ax2.plot(cum_excess.index, cum_excess.values, color='#2ca02c', label='Cumulative Excess Return', linewidth=1.5)
         ax2.axhline(0.0, color='black', linestyle='-', linewidth=0.5)
         ax2.fill_between(cum_excess.index, cum_excess.values, 0, where=(cum_excess.values >= 0), color='#2ca02c', alpha=0.3)
         ax2.fill_between(cum_excess.index, cum_excess.values, 0, where=(cum_excess.values < 0), color='#d62728', alpha=0.3)
-        
+
         ax2.set_ylabel('Excess Return')
         ax2.set_xlabel('Date')
         ax2.legend(loc='upper left')

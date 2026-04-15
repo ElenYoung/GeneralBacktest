@@ -8,6 +8,7 @@ This directory contains an Anthropic-style skill for standardizing how an agent 
 - `examples/cash_backtest_template.py`: Cash-mode backtest template.
 - `examples/visualization_workflow.py`: Visualization workflow template.
 - `examples/data_timing_and_no_lookahead.md`: Timing rules to avoid lookahead bias.
+- `examples/t0_example.py`: T+0 intraday round-trip backtest example (v1.2.0).
 
 ## Suggested Placement
 
@@ -20,8 +21,8 @@ and keep `SKILL.md` as the entry file.
 ## What This Skill Enforces
 
 - Input schema validation before execution
-- Correct backtest method selection
+- Correct backtest method selection (standard / cash / ETF / stock / T+0)
 - Standard output structure for metrics and assumptions
 - Explicit error handling and reproducibility requirements
 - No-lookahead timing constraints for weights and trade prices
-- Mandatory disclosure of framework limitations (including T strategy mismatch)
+- A-share compliance validation for T+0 strategies

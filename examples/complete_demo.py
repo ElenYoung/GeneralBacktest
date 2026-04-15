@@ -200,39 +200,44 @@ def generate_all_plots(standard_results, standard_bt, cash_results, cash_bt,
     print("生成可视化图表...")
     print("="*70)
 
-    output_dir = os.path.join(os.path.dirname(__file__), '..', 'output_demo')
-    os.makedirs(output_dir, exist_ok=True)
+    output_base = os.path.join(os.path.dirname(__file__), '..', 'output_demo')
+    std_dir = os.path.join(output_base, 'standard_demo')
+    cash_dir = os.path.join(output_base, 'cash_demo')
+    adv_dir = os.path.join(output_base, 'advanced_demo')
+    os.makedirs(std_dir, exist_ok=True)
+    os.makedirs(cash_dir, exist_ok=True)
+    os.makedirs(adv_dir, exist_ok=True)
 
     # 1. 标准回测图表
     print("\n[1/6] 标准回测图表...")
     standard_bt.plot_nav_curve(
-        save_path=os.path.join(output_dir, 'demo_standard_nav.png'),
+        save_path=os.path.join(std_dir, 'demo_standard_nav.png'),
         title='Standard Backtest NAV Curve'
     )
-    print("  → demo_standard_nav.png")
+    print("  → standard_demo/demo_standard_nav.png")
 
     standard_bt.plot_monthly_returns_heatmap(
-        save_path=os.path.join(output_dir, 'demo_standard_monthly.png')
+        save_path=os.path.join(std_dir, 'demo_standard_monthly.png')
     )
-    print("  → demo_standard_monthly.png")
+    print("  → standard_demo/demo_standard_monthly.png")
 
     standard_bt.plot_position_heatmap(
-        save_path=os.path.join(output_dir, 'demo_standard_positions.png')
+        save_path=os.path.join(std_dir, 'demo_standard_positions.png')
     )
-    print("  → demo_standard_positions.png")
+    print("  → standard_demo/demo_standard_positions.png")
 
     # 2. 现金回测图表
     print("\n[2/6] 现金回测图表...")
     cash_bt.plot_nav_curve(
-        save_path=os.path.join(output_dir, 'demo_cash_nav.png'),
+        save_path=os.path.join(cash_dir, 'demo_cash_nav.png'),
         title='Cash Backtest NAV Curve'
     )
-    print("  → demo_cash_nav.png")
+    print("  → cash_demo/demo_cash_nav.png")
 
     cash_bt.plot_turnover_analysis(
-        save_path=os.path.join(output_dir, 'demo_cash_turnover.png')
+        save_path=os.path.join(cash_dir, 'demo_cash_turnover.png')
     )
-    print("  → demo_cash_turnover.png")
+    print("  → cash_demo/demo_cash_turnover.png")
 
     # 3. 对数坐标图表（从首次调仓开始，避免初始水平线）
     print("\n[3/6] 对数坐标图表...")
@@ -247,9 +252,9 @@ def generate_all_plots(standard_results, standard_bt, cash_results, cash_bt,
         ax.set_ylabel('NAV')
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'demo_log_nav.png'), bbox_inches='tight')
+        plt.savefig(os.path.join(adv_dir, 'demo_log_nav.png'), bbox_inches='tight')
         plt.close()
-        print("  → demo_log_nav.png")
+        print("  → advanced_demo/demo_log_nav.png")
     else:
         print("  → Skipped (no data)")
 
@@ -276,50 +281,50 @@ def generate_all_plots(standard_results, standard_bt, cash_results, cash_bt,
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.savefig(os.path.join(output_dir, 'demo_dual_nav.png'), bbox_inches='tight')
+        plt.savefig(os.path.join(adv_dir, 'demo_dual_nav.png'), bbox_inches='tight')
         plt.close()
-        print("  → demo_dual_nav.png")
+        print("  → advanced_demo/demo_dual_nav.png")
     else:
         print("  → Skipped (no data)")
 
     # 5. Dashboard
     print("\n[5/6] 综合 Dashboard...")
     standard_bt.plot_all(
-        save_path=os.path.join(output_dir, 'demo_standard_dashboard.png')
+        save_path=os.path.join(std_dir, 'demo_standard_dashboard.png')
     )
-    print("  → demo_standard_dashboard.png")
+    print("  → standard_demo/demo_standard_dashboard.png")
 
     cash_bt.plot_all(
-        save_path=os.path.join(output_dir, 'demo_cash_dashboard.png')
+        save_path=os.path.join(cash_dir, 'demo_cash_dashboard.png')
     )
-    print("  → demo_cash_dashboard.png")
+    print("  → cash_demo/demo_cash_dashboard.png")
 
     # 6. 导出数据
     print("\n[6/6] 导出详细数据...")
 
     # 标准回测数据
     standard_results['nav_series'].to_csv(
-        os.path.join(output_dir, 'demo_standard_nav_series.csv')
+        os.path.join(std_dir, 'demo_standard_nav_series.csv')
     )
-    print("  → demo_standard_nav_series.csv")
+    print("  → standard_demo/demo_standard_nav_series.csv")
 
     # 现金回测数据
     cash_results['nav_series'].to_csv(
-        os.path.join(output_dir, 'demo_cash_nav_series.csv')
+        os.path.join(cash_dir, 'demo_cash_nav_series.csv')
     )
     cash_results['cash_series'].to_csv(
-        os.path.join(output_dir, 'demo_cash_series.csv')
+        os.path.join(cash_dir, 'demo_cash_series.csv')
     )
-    print("  → demo_cash_nav_series.csv")
-    print("  → demo_cash_series.csv")
+    print("  → cash_demo/demo_cash_nav_series.csv")
+    print("  → cash_demo/demo_cash_series.csv")
 
     # 交易记录
     if len(cash_results['trade_records']) > 0:
         cash_results['trade_records'].to_csv(
-            os.path.join(output_dir, 'demo_cash_trades.csv'),
+            os.path.join(cash_dir, 'demo_cash_trades.csv'),
             index=False
         )
-        print("  → demo_cash_trades.csv")
+        print("  → cash_demo/demo_cash_trades.csv")
 
 
 def print_summary(standard_results, cash_results, position_results, standard_bt, cash_bt, position_bt):

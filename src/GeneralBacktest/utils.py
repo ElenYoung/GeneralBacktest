@@ -704,5 +704,80 @@ def calculate_all_metrics(nav_series: pd.Series, benchmark_nav: Optional[pd.Seri
         # 跟踪误差
         excess_returns = aligned_returns - aligned_benchmark
         metrics['跟踪误差'] = excess_returns.std() * np.sqrt(periods_per_year)
-    
+
     return metrics
+
+
+def calculate_intraday_metrics(intraday_records: pd.DataFrame) -> Dict:
+    """
+    计算 T+0 日内回转专用指标
+
+    Parameters:
+    -----------
+    intraday_records : pd.DataFrame
+        日内阶段交易记录，包含 date, phase, return, commission, target_weights 列
+        通常由 TBacktest.run_t0_backtest() 的 intraday_records 获得
+
+    Returns:
+    --------
+    dict
+        包含 T+0 专用指标的字典
+    """
+    if intraday_records is None or len(intraday_records) == 0:
+        return {
+            '卖出胜率': 0.0,
+            '买入胜率': 0.0,
+            '卖出次数': 0,
+            '买入次数': 0,
+            '卖出累计收益': 0.0,
+            '买入累计收益': 0.0,
+            '卖出平均收益': 0.0,
+            '买入平均收益': 0.0,
+            '日内收益贡献占比': 0.0,
+            '平均佣金率': 0.0,
+        }
+
+    # 拆分 sell 和 buy phase 记录
+    sell_records = intraday_records[intraday_records['phase'] == 'sell']
+    buy_records = intraday_records[intraday_records['phase'] == 'buy']
+
+    sell_returns = sell_records['return'].values if 'return' in sell_records.columns else np.array([])
+    buy_returns = buy_records['return'].values if 'return' in buy_records.columns else np.array([])
+
+    # 卖出胜率 / 买入胜率（收益 > 0 为胜）
+    sell_win_rate = (sell_returns > 0).sum() / len(sell_returns) if len(sell_returns) > 0 else 0.0
+    buy_win_rate = (buy_returns > 0).sum() / len(buy_returns) if len(buy_returns) > 0 else 0.0
+
+    # 累计收益
+    sell_total = float(np.sum(sell_returns)) if len(sell_returns) > 0 else 0.0
+    buy_total = float(np.sum(buy_returns)) if len(buy_returns) > 0 else 0.0
+
+    # 平均收益
+    sell_avg = float(np.mean(sell_returns)) if len(sell_returns) > 0 else 0.0
+    buy_avg = float(np.mean(buy_returns)) if len(buy_returns) > 0 else 0.0
+
+    # 日内收益贡献占比（日内收益 / 总日内收益）
+    total_intraday = sell_total + buy_total
+    sell_contrib_ratio = sell_total / total_intraday if total_intraday != 0 else 0.0
+    buy_contrib_ratio = buy_total / total_intraday if total_intraday != 0 else 0.0
+
+    # 平均佣金率（按 phase 分组，佣金 / |return| 的均值）
+    sell_commissions = sell_records['commission'].values if 'commission' in sell_records.columns else np.array([])
+    buy_commissions = buy_records['commission'].values if 'commission' in buy_records.columns else np.array([])
+
+    all_commissions = np.concatenate([sell_commissions, buy_commissions])
+    avg_commission = float(np.mean(all_commissions)) if len(all_commissions) > 0 else 0.0
+
+    return {
+        '卖出胜率': sell_win_rate,
+        '买入胜率': buy_win_rate,
+        '卖出次数': int(len(sell_returns)),
+        '买入次数': int(len(buy_returns)),
+        '卖出累计收益': sell_total,
+        '买入累计收益': buy_total,
+        '卖出平均收益': sell_avg,
+        '买入平均收益': buy_avg,
+        '卖出收益贡献占比': sell_contrib_ratio,
+        '买入收益贡献占比': buy_contrib_ratio,
+        '平均佣金率': avg_commission,
+    }

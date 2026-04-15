@@ -21,7 +21,8 @@ Primary goals:
 Activate this skill for requests containing intents such as:
 
 - "回测", "backtest", "净值", "调仓", "换手率", "现金仓位", "基准对比"
-- Running `run_backtest` / `run_backtest_with_cash` / ETF / stock DB APIs
+- "T+0", "做T", "日内回转", "日内交易", "intraday", "round-trip"
+- Running `run_backtest` / `run_backtest_with_cash` / `run_t0_backtest` / ETF / stock DB APIs
 - Backtest plotting, reporting, diagnostics, or result explanation
 
 ## Code-Accurate API Facts (Must Follow)
@@ -33,6 +34,7 @@ Based on current implementation:
 3. `run_backtest_ETF(...)` / `run_backtest_stock(...)` fetch daily data from DB and call `run_backtest(...)`.
 4. `plot_all()` is an alias of `plot_dashboard()`.
 5. `plot_nav_curve(log_scale=True)` and `plot_nav_curve_dual()` are supported.
+6. `TBacktest.run_t0_backtest(...)` handles same-day sell → buy cycles. Weights use **target position** semantics. The `phase` column ('sell' | 'buy') controls intraday execution order. A-share compliance is enforced: buy must follow sell; net sell ≤ net buy each day.
 
 ## Hard Rules
 
@@ -112,13 +114,16 @@ becomes temporally inconsistent and can produce distorted daily PnL.
 
 ## Method Selection Decision Tree
 
-1. Need realistic capital constraints, lot trading, or cash tracking:
+1. Need T+0 intraday round-trip (same-day sell → buy):
+- choose `TBacktest.run_t0_backtest()`.
+
+2. Need realistic capital constraints, lot trading, or cash tracking:
 - choose `run_backtest_with_cash()`.
 
-2. Need DB-native ETF/stock workflow and valid DB config is provided:
+3. Need DB-native ETF/stock workflow and valid DB config is provided:
 - choose `run_backtest_ETF()` or `run_backtest_stock()`.
 
-3. Otherwise:
+4. Otherwise:
 - choose `run_backtest()`.
 
 ## Cash-Mode Guide (`run_backtest_with_cash`)
@@ -180,18 +185,17 @@ The agent must communicate these constraints when relevant:
 1. No true intraday bar engine
 - Core engine is daily-based; it is not an event-driven intraday simulator.
 
-2. Not suitable for T strategy (same-day round-trip / intraday scalping logic)
-- Current design assumes one rebalance decision per day with day-level decomposition.
-- It does not model multiple intraday signal-trade cycles.
-
-3. Standard mode is weight-based, not order-book execution
+2. Standard mode is weight-based, not order-book execution
 - `run_backtest()` uses weight transitions and adjusted prices, not discrete share-level fill simulation.
 
-4. Cash benchmark is simplified
+3. Cash benchmark is simplified
 - In cash mode, benchmark computation is simplified and does not fully mirror cash constraints.
 
-5. Data quality dependency
+4. Data quality dependency
 - Missing/abnormal prices can materially distort results if not cleaned in advance.
+
+5. TBacktest requires explicit `phase` column
+- `run_t0_backtest()` requires the `phase` column in `weights_data`. Strategies that do not include phase annotations fall back to single-phase behavior. A-share compliance checks are strict and will raise errors for invalid intraday sequences.
 
 ## Execution Workflow
 
@@ -267,6 +271,7 @@ Required capture:
 - `examples/cash_backtest_template.py`
 - `examples/visualization_workflow.py`
 - `examples/data_timing_and_no_lookahead.md`
+- `examples/t0_example.py` — T+0 intraday round-trip backtest
 
 ## Completion Checklist
 
