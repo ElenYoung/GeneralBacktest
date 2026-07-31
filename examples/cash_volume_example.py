@@ -2,11 +2,14 @@
 GeneralBacktest v1.2.0 - 现金仓位 + 可成交量约束 演示
 
 演示 run_backtest_with_cash() 新增的 volume_data 参数：
-1. 不启用量约束（旧行为）
-2. 启用量约束（严格模式，用户外部计算好的每日可成交股数）
+1. 情形 A：不启用量约束（旧行为）
+2. 情形 B：共享池模式（volume_col 单列，买+卖共享同一份当日额度）
+3. 情形 C：独立池模式（buy_volume_col / sell_volume_col 分开，
+           适合买卖时点差异较大的场景，例如 T 日 10:00 买 / T+1 日 14:50 卖）
 
-对比两种模式下的净值、成交量、订单填充率等差异。
+对比三种模式下的净值、订单填充率、量约束占比等差异。
 """
+
 
 import numpy as np
 import pandas as pd
@@ -69,9 +72,15 @@ def generate_data():
     # （这里是 mock 的构造方式；真实场景中由用户基于分钟数据自行计算）
     vol_df = price_df[['date', 'code', 'daily_volume']].copy()
     vol_df['tradable_shares'] = (vol_df['daily_volume'] * 0.05).astype(int)
-    vol_df = vol_df[['date', 'code', 'tradable_shares']]
+    # 独立池模拟：假设买点位于 T 日 10:00（前半日成交量约占 60%），
+    # 卖点位于 T+1 日 14:50（尾盘成交量约占 40%），因此把当日 5% 额度按 60/40 拆分。
+    # 真实使用中，两列由外部分钟数据分别计算得到（见 can_trade_amt_build/）。
+    vol_df['can_buy_amt'] = (vol_df['tradable_shares'] * 0.6).astype(int)
+    vol_df['can_sell_amt'] = (vol_df['tradable_shares'] * 0.4).astype(int)
+    vol_df = vol_df[['date', 'code', 'tradable_shares', 'can_buy_amt', 'can_sell_amt']]
 
     return price_df, weights_df, vol_df
+
 
 
 def summarize(name, results):
@@ -91,7 +100,7 @@ def summarize(name, results):
 
 
 def main():
-    print("[1/3] 生成模拟数据 ...")
+    print("[1/4] 生成模拟数据 ...")
     price_df, weights_df, vol_df = generate_data()
     print(f"  price rows:  {len(price_df):,}")
     print(f"  weight rows: {len(weights_df):,}")
@@ -100,7 +109,7 @@ def main():
     initial_capital = 1_000_000.0
 
     # ---- 情形 A：不启用 volume_data ----
-    print("\n[2/3] 情形 A - 无量约束回测")
+    print("\n[2/4] 情形 A - 无量约束回测")
     bt_a = GeneralBacktest('2023-01-01', '2024-06-30')
     res_a = bt_a.run_backtest_with_cash(
         weights_data=weights_df,
@@ -116,8 +125,8 @@ def main():
     )
     summarize("A. 无量约束", res_a)
 
-    # ---- 情形 B：启用 volume_data ----
-    print("\n[3/3] 情形 B - 启用可成交量约束回测")
+    # ---- 情形 B：启用 volume_data（共享池模式） ----
+    print("\n[3/4] 情形 B - 共享池模式（buy+sell 共用 tradable_shares）")
     bt_b = GeneralBacktest('2023-01-01', '2024-06-30')
     res_b = bt_b.run_backtest_with_cash(
         weights_data=weights_df,
@@ -133,15 +142,39 @@ def main():
         volume_data=vol_df,
         volume_col='tradable_shares',
     )
-    summarize("B. 有量约束", res_b)
+    summarize("B. 共享池 (shared pool)", res_b)
+
+    # ---- 情形 C：启用 volume_data（独立池模式） ----
+    print("\n[4/4] 情形 C - 独立池模式（can_buy_amt / can_sell_amt 分列）")
+    bt_c = GeneralBacktest('2023-01-01', '2024-06-30')
+    res_c = bt_c.run_backtest_with_cash(
+        weights_data=weights_df,
+        price_data=price_df,
+        initial_capital=initial_capital,
+        buy_price='open',
+        sell_price='close',
+        close_price_col='close',
+        lot_size=100,
+        trade_critic='weight_desc',
+        transaction_cost=[0.001, 0.001],
+        slippage=0.001,
+        volume_data=vol_df,
+        # 关键：同时指定 buy_volume_col / sell_volume_col 即切换到独立池模式，
+        # 此时 volume_col 参数被忽略。
+        buy_volume_col='can_buy_amt',
+        sell_volume_col='can_sell_amt',
+    )
+    summarize("C. 独立池 (split pool)", res_c)
 
     # ---- 对比图 ----
     fig, ax = plt.subplots(figsize=(12, 6))
     ax.plot(res_a['nav_series'].index, res_a['nav_series'].values,
             label='A. 无量约束', linewidth=2)
     ax.plot(res_b['nav_series'].index, res_b['nav_series'].values,
-            label='B. 有量约束（tradable_shares=vol*5%）', linewidth=2, linestyle='--')
-    ax.set_title('run_backtest_with_cash: 是否启用 volume_data 对比')
+            label='B. 共享池（volume_col=tradable_shares）', linewidth=2, linestyle='--')
+    ax.plot(res_c['nav_series'].index, res_c['nav_series'].values,
+            label='C. 独立池（can_buy_amt / can_sell_amt）', linewidth=2, linestyle=':')
+    ax.set_title('run_backtest_with_cash: 三种量约束模式对比')
     ax.set_xlabel('Date')
     ax.set_ylabel('NAV')
     ax.grid(True, alpha=0.3)
@@ -154,6 +187,15 @@ def main():
     plt.savefig(out_path, dpi=150, bbox_inches='tight')
     print(f"\n对比图已保存: {out_path}")
     plt.close(fig)
+
+    # ---- 独立池 vs 共享池 - 订单填充率对比 ----
+    print("\n===== 共享池 vs 独立池 关键指标对比 =====")
+    print(f"{'Metric':<25}{'B. Shared':>15}{'C. Split':>15}")
+    for key in ['平均订单填充率', '量约束订单占比', '最终现金占比', '累计收益率']:
+        vb = res_b['metrics'].get(key, 0)
+        vc = res_c['metrics'].get(key, 0)
+        print(f"{key:<25}{vb:>15.2%}{vc:>15.2%}")
+
 
 
 if __name__ == '__main__':

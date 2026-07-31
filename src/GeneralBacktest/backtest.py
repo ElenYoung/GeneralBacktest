@@ -910,16 +910,25 @@ class GeneralBacktest:
             - 若为 None：不施加量约束，行为与旧版本一致。
             - 若不为 None：**严格模式** —— (date, code) 未出现在 volume_data 中的样本
               视为当日不可交易（tradable_shares=0）。
-            必要列: [date_col, asset_col, volume_col] 或者
-                    [date_col, asset_col, buy_volume_col, sell_volume_col]
+
+            列的组合有两种模式：
+            (a) 共享池模式：仅指定 volume_col，买+卖当日共享同一个额度池，
+                成交后从中扣减。适合"当日总流动性预算"的语义。
+                必要列: [date_col, asset_col, volume_col]
+            (b) 独立池模式：同时指定 buy_volume_col 与 sell_volume_col，买、卖各自
+                维护独立的额度池，互不干扰。适合买卖时点不同、可成交量应严格区分的
+                场景（例如 label 语义为 T 日 10:00 买 / T+1 日 14:50 卖）。
+                必要列: [date_col, asset_col, buy_volume_col, sell_volume_col]
         volume_col : str
-            共用列名，默认 'tradable_shares'（同时作为买卖上限）。
-            当 buy_volume_col / sell_volume_col 同时指定时忽略此参数。
+            **共享池模式**下的列名，默认 'tradable_shares'（同时作为买卖上限，
+            并共享同一份剩余额度）。当 buy_volume_col / sell_volume_col
+            同时指定时忽略此参数。
         buy_volume_col : str, optional
-            单独指定"买入可成交量"列名（可为 None）
+            **独立池模式**下的"买入可成交量"列名。
         sell_volume_col : str, optional
-            单独指定"卖出可成交量"列名（可为 None）
-            注意：若指定其一，必须两者都指定；否则回退到 volume_col。
+            **独立池模式**下的"卖出可成交量"列名。
+            注意：buy_volume_col 与 sell_volume_col **必须同时指定**或**同时为 None**；
+            只指定其一会直接抛出 ValueError。
         benchmark_weights : pd.DataFrame, optional
             基准权重数据
         benchmark_name : str
@@ -983,6 +992,15 @@ class GeneralBacktest:
         p_buy_vol = None
         p_sell_vol = None
 
+        # ① 早期严格校验：buy_volume_col / sell_volume_col 必须同时提供或同时为 None，
+        #    避免"只填其一时静默回退到 volume_col"造成难以定位的错误。
+        if (buy_volume_col is None) ^ (sell_volume_col is None):
+            raise ValueError(
+                "`buy_volume_col` 与 `sell_volume_col` 必须同时指定或同时为 None，"
+                f"当前传入：buy_volume_col={buy_volume_col!r}, "
+                f"sell_volume_col={sell_volume_col!r}"
+            )
+
         if use_volume_constraint:
             # 决定使用共用列还是买卖独立列
             use_split_cols = (buy_volume_col is not None) and (sell_volume_col is not None)
@@ -1004,15 +1022,20 @@ class GeneralBacktest:
             vd = vd[(vd[date_col] >= self.start_date) & (vd[date_col] <= self.end_date)]
 
             if use_split_cols:
+                # 独立池模式：买卖各一份 pivot，互不干扰。
                 p_buy_vol = vd.pivot(index=date_col, columns=asset_col, values=buy_volume_col)
                 p_sell_vol = vd.pivot(index=date_col, columns=asset_col, values=sell_volume_col)
+                pool_mode = "split (buy/sell independent)"
             else:
+                # 共享池模式：p_buy_vol 与 p_sell_vol 指向同一 DataFrame，
+                # 当日买 + 卖共同扣减同一份额度，符合"当日总流动性预算"语义。
                 pv = vd.pivot(index=date_col, columns=asset_col, values=volume_col)
                 p_buy_vol = pv
                 p_sell_vol = pv
+                pool_mode = "shared (single pool for buy+sell)"
 
             print(f"  - Volume constraint enabled (strict mode: missing => 0). "
-                  f"Split cols: {use_split_cols}")
+                  f"Pool mode: {pool_mode}")
 
         def _get_tradable(pivot: Optional[pd.DataFrame], date, asset) -> Optional[float]:
             """
@@ -1072,76 +1095,87 @@ class GeneralBacktest:
                             if target_shares > 0:
                                 target_holdings[asset] = target_shares
 
+                # ---------- 定义统一的卖出执行函数 ----------
+                def _execute_sell(item):
+                    """
+                    对单个 sell_list item 执行卖出操作，
+                    综合考虑：lot_size、可成交量约束（若启用）。
+                    直接修改闭包中的 cash / holdings / trade_records 等。
+                    """
+                    nonlocal cash, total_orders, total_intended_shares, \
+                        total_filled_shares, volume_constrained_orders
+
+                    asset = item['asset']
+                    intended = item['sell_shares_needed']
+                    exec_price = item['exec_price']  # 已含 slippage
+
+                    total_orders += 1
+                    total_intended_shares += intended
+
+                    # 卖端目前没有其它约束（例如现金），只需按 volume 约束卡上限
+                    sell_shares = intended
+                    constraint_hit = 'none'
+                    if use_volume_constraint:
+                        sell_limit = _get_tradable(p_sell_vol, date, asset)
+                        max_sell = int(min(sell_shares, sell_limit) / lot_size) * lot_size
+                        if max_sell < sell_shares:
+                            constraint_hit = 'volume'
+                        sell_shares = max_sell
+
+                    total_filled_shares += sell_shares
+                    if constraint_hit == 'volume':
+                        volume_constrained_orders += 1
+
+                    if sell_shares > 0:
+                        proceeds = sell_shares * exec_price
+                        cost = proceeds * transaction_cost[1]
+                        cash += proceeds - cost
+                        trade_records.append({
+                            'date': date, 'asset': asset, 'action': 'sell',
+                            'shares': sell_shares,
+                            'intended_shares': intended,
+                            'constraint_hit': constraint_hit,
+                            'price': exec_price,
+                            'amount': proceeds, 'commission': cost
+                        })
+
+                        # 扣减 sell volume 余量
+                        if use_volume_constraint and p_sell_vol is not None \
+                                and date in p_sell_vol.index and asset in p_sell_vol.columns:
+                            p_sell_vol.loc[date, asset] = max(
+                                0.0, p_sell_vol.loc[date, asset] - sell_shares
+                            )
+
+                        holdings[asset] = holdings.get(asset, 0) - sell_shares
+                        if holdings[asset] <= 0:
+                            del holdings[asset]
+                    else:
+                        # 记录一笔零成交（完全被量约束卡住）
+                        trade_records.append({
+                            'date': date, 'asset': asset, 'action': 'sell',
+                            'shares': 0,
+                            'intended_shares': intended,
+                            'constraint_hit': constraint_hit,
+                            'price': exec_price,
+                            'amount': 0.0, 'commission': 0.0
+                        })
+
                 # 第一步：卖出（先卖出不在目标持仓中的，或需要减仓的）
                 sell_list = []
                 for asset, shares in holdings.items():
                     target = target_holdings.get(asset, 0)
-                    if shares > target:
-                        sell_list.append((asset, shares - target))
-
-                for asset, intended_sell_shares in sell_list:
-                    if asset in p_sell.columns and date in p_sell.index:
+                    if shares > target and asset in p_sell.columns and date in p_sell.index:
                         price = p_sell.loc[date, asset]
                         if not pd.isna(price) and price > 0:
-                            exec_price = price * (1 - slippage)
+                            sell_list.append({
+                                'asset': asset,
+                                'sell_shares_needed': shares - target,
+                                'price': price,
+                                'exec_price': price * (1 - slippage),
+                            })
 
-                            # 应用可成交量约束（严格模式）
-                            sell_shares = intended_sell_shares
-                            constraint_hit = 'none'
-                            if use_volume_constraint:
-                                sell_limit = _get_tradable(p_sell_vol, date, asset)
-                                # 按 lot_size 向下取整
-                                max_sell = int(min(sell_shares, sell_limit) / lot_size) * lot_size
-                                if max_sell < sell_shares:
-                                    constraint_hit = 'volume'
-                                sell_shares = max_sell
-
-                            total_orders += 1
-                            total_intended_shares += intended_sell_shares
-                            total_filled_shares += sell_shares
-                            if constraint_hit == 'volume':
-                                volume_constrained_orders += 1
-
-                            if sell_shares > 0:
-                                proceeds = sell_shares * exec_price
-                                cost = proceeds * transaction_cost[1]
-                                cash += proceeds - cost
-
-                                trade_records.append({
-                                    'date': date,
-                                    'asset': asset,
-                                    'action': 'sell',
-                                    'shares': sell_shares,
-                                    'intended_shares': intended_sell_shares,
-                                    'constraint_hit': constraint_hit,
-                                    'price': exec_price,
-                                    'amount': proceeds,
-                                    'commission': cost
-                                })
-
-                                # 扣减 sell volume 余量
-                                if use_volume_constraint and p_sell_vol is not None \
-                                        and date in p_sell_vol.index and asset in p_sell_vol.columns:
-                                    p_sell_vol.loc[date, asset] = max(
-                                        0.0, p_sell_vol.loc[date, asset] - sell_shares
-                                    )
-
-                                holdings[asset] = holdings.get(asset, 0) - sell_shares
-                                if holdings[asset] <= 0:
-                                    del holdings[asset]
-                            else:
-                                # 完全被量约束卡住，仍记录一笔零成交
-                                trade_records.append({
-                                    'date': date,
-                                    'asset': asset,
-                                    'action': 'sell',
-                                    'shares': 0,
-                                    'intended_shares': intended_sell_shares,
-                                    'constraint_hit': constraint_hit,
-                                    'price': exec_price,
-                                    'amount': 0.0,
-                                    'commission': 0.0
-                                })
+                for item in sell_list:
+                    _execute_sell(item)
 
 
                 # 第二步：按顺序买入
@@ -1250,28 +1284,56 @@ class GeneralBacktest:
                 elif trade_critic == 'amount_max':
                     # 最大化总成交金额策略
                     # 通过尝试多种排列组合，找到使总成交金额最大的交易顺序
-                    # 注：模拟阶段仅考虑 cash 约束（volume 约束在真实执行时才会再次施加）
+                    # 仿真阶段同时考虑 cash 约束与 volume 约束（若启用），以保证
+                    # 选中的顺序在真实执行时确实可达到期望的成交金额。
                     from itertools import permutations
 
+                    # 预先取一次当日各标的的 buy 额度快照（不修改 pivot 本身，
+                    # 真实扣减由 _execute_buy 完成）。
+                    if use_volume_constraint:
+                        _buy_vol_snapshot = {
+                            it['asset']: _get_tradable(p_buy_vol, date, it['asset'])
+                            for it in buy_list
+                        }
+                    else:
+                        _buy_vol_snapshot = None
+
                     def calculate_total_traded(order, available_cash):
-                        """模拟按给定顺序交易，返回总成交金额（仅考虑 cash 约束）"""
+                        """
+                        模拟按给定顺序交易，返回总成交金额。
+                        同时考虑 cash 约束与 volume 约束（若启用），并按 lot_size 取整。
+                        """
                         temp_cash = available_cash
+                        # 复制一份 volume 快照，避免污染
+                        temp_vol = dict(_buy_vol_snapshot) if _buy_vol_snapshot is not None else None
                         total_amount = 0
                         for item in order:
+                            asset = item['asset']
                             price = item['price']
                             exec_price = price * (1 + slippage)
                             buy_shares = item['buy_shares_needed']
 
+                            # cash 约束
                             required = buy_shares * exec_price * (1 + transaction_cost[0])
                             if required > temp_cash:
-                                buy_shares = int(temp_cash / (exec_price * (1 + transaction_cost[0])) / lot_size) * lot_size
+                                buy_shares = int(
+                                    temp_cash / (exec_price * (1 + transaction_cost[0])) / lot_size
+                                ) * lot_size
+
+                            # volume 约束
+                            if temp_vol is not None:
+                                v_limit = temp_vol.get(asset, 0.0)
+                                buy_shares = int(min(buy_shares, v_limit) / lot_size) * lot_size
 
                             if buy_shares > 0:
                                 amount = buy_shares * exec_price
                                 cost = amount * transaction_cost[0]
                                 temp_cash -= (amount + cost)
+                                if temp_vol is not None:
+                                    temp_vol[asset] = max(0.0, temp_vol[asset] - buy_shares)
                                 total_amount += amount
                         return total_amount
+
 
                     # 根据股票数量选择优化策略
                     if len(buy_list) <= 8:
