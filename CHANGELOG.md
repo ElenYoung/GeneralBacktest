@@ -2,6 +2,55 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] - 2026-07-31
+
+### Added
+
+- `run_backtest_with_cash()` 新增执行顺序模式（`execution_order`），用于处理
+  A 股 T+1 约束下 sell 时段晚于 buy 时段的物理时序（例如
+  `buy@10:00 / sell@14:50`）。此前的单轨"先卖后买"会用当日尚未发生的卖出
+  所得进行买入，违背了真实物理时序，因而在极端情形下会高估现金利用率。
+- 新增两种执行模式：
+  - **`execution_order='sell_first'`**（默认）：单轨"先卖后买"，行为与
+    v1.2.x 完全一致，适用于 sell 时段早于 buy 时段（如 `sell@09:30 /
+    buy@14:30`）或买卖同时段的理想化场景。
+  - **`execution_order='buy_first'`**：启用**双轨（dual-track）**回测。
+    将 `initial_capital` 均分为两个逻辑资金池 A、B，每日一条 track
+    在 10:00 建仓 signal_today、另一条 track 在 14:50 清仓上一次持仓，
+    两条 track 每日轮换角色。每条 track 的持有周期为 1 天，天然满足 T+1。
+- 新增参数 `dual_track_config`（仅在 `buy_first` 下生效）：
+  - `imbalance_threshold`（默认 0.10）：`|cap_A - cap_B| / total` 超过此
+    阈值时触发同账户逻辑现金挪移。
+  - `rebalance_gain`（默认 0.5）：再平衡收敛系数（一阶稳定控制器）。
+  - `initial_split`（默认 0.5）：初始 `cash_A / total` 比例。
+  - `first_buy_track`（默认 `'A'`）：Day 0 首日的 BUY-track。
+- `trade_records` 与 `daily_positions` 在双轨模式下新增 `track` 字段
+  （值为 `'A'` 或 `'B'`），用于区分交易与持仓所属的资金池。
+- 双轨模式返回结果新增字段：
+  - `track_a` / `track_b`：各 track 的 `nav_series` 与 `cash_series`。
+  - `imbalance_series`：每日不平衡度记录。
+  - `rebalance_events`：所有再平衡事件明细。
+- 新增双轨专属指标：`最大不平衡度`、`平均不平衡度`、`再平衡次数`。
+- `GeneralBacktest` 实例新增属性：`is_dual_track`、`track_a_nav`、
+  `track_b_nav`、`track_a_cash`、`track_b_cash`、`imbalance_records`、
+  `rebalance_events`。
+- 新增示例 `examples/dual_track_example.py`。
+
+### Notes
+
+- 双轨模式下，Track A/B 均运行在 **同一账户** 内，`cash_A + cash_B`
+  始终等于账户总现金；两条 track 的股票持仓不跨轨迁移（仅现金可迁移）。
+- 未成交（卖不出）的股票会留在原 track 的 holdings，下一日 14:50 继续
+  尝试卖出，不会跨轨转移。
+- 若当日无信号（`signal_today` 缺失），BUY-track 当日不建仓；SELL 端
+  仍照常执行。
+
+### Compatibility
+
+- 完全向后兼容 v1.2.x：`execution_order` 默认值为 `'sell_first'`，
+  未指定该参数的调用行为不变。
+
+
 ## [1.2.1] - 2026-07-31
 
 ### Added / Improved

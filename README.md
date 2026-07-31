@@ -180,6 +180,51 @@ print(f"Total Orders:          {m['订单总数']}")
 Trade records add `intended_shares` and `constraint_hit` columns
 (`'none' | 'cash' | 'volume'`).
 
+#### Execution Order & Dual-Track Backtest (v1.3.0)
+
+When the buy slot is earlier than the sell slot (e.g. `buy_price` = VWAP
+around 10:00 while `sell_price` = VWAP around 14:50), the classic
+"sell-first" execution implicitly uses same-day sell proceeds that have
+not yet physically occurred to fund the morning buy — violating the true
+A-share T+1 timing. v1.3.0 introduces the `execution_order` parameter
+plus a **dual-track** backtest to model this correctly.
+
+```python
+# Dual-track: split initial_capital into two logical cash pools A / B
+# Day T   : A buys signal_T at 10:00 with cash_A ; B sells signal_{T-1} at 14:50
+# Day T+1 : B buys signal_{T+1} with cash_B ; A sells signal_T
+# Each track holds for exactly 1 day -> naturally T+1 compliant
+results = bt.run_backtest_with_cash(
+    weights_data=weights_data,
+    price_data=price_data,
+    initial_capital=1_000_000,
+    buy_price="vwap_1000",           # 10:00 VWAP
+    sell_price="vwap_1450",          # 14:50 VWAP
+    close_price_col="close",
+    execution_order="buy_first",     # enable dual-track
+    dual_track_config={
+        "imbalance_threshold": 0.10, # rebalance if |cap_A-cap_B|/total > 0.10
+        "rebalance_gain": 0.5,       # first-order convergence gain
+        "initial_split": 0.5,        # initial cash_A / total
+        "first_buy_track": "A",      # Day 0 first-buy track
+    },
+)
+
+# Extra fields on the result dict
+results["track_a"]              # {'nav_series', 'cash_series'}
+results["track_b"]
+results["imbalance_series"]     # per-day imbalance record
+results["rebalance_events"]     # cash rebalancing events
+
+m = results["metrics"]
+print(f"Max Imbalance:      {m['最大不平衡度']:.2%}")
+print(f"Rebalance Count:    {m['再平衡次数']}")
+```
+
+`trade_records` / `daily_positions` gain a `track` column (`'A'` / `'B'`)
+when running in dual-track mode. If `execution_order` is left unspecified,
+behavior is identical to v1.2.x.
+
 
 ### ETF Database Backtest (Requires DB Config)
 

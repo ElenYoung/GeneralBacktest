@@ -140,6 +140,48 @@ print(f"订单总数:       {m['订单总数']}")
 **注意**：框架不做跨日顺延——用户需要保证 `buy_price` / `sell_price` 与
 `tradable_shares` 是同一天的量价对齐结果。
 
+#### 执行顺序模式与双轨回测（v1.3.0）
+
+当买入时段早于卖出时段（例如 `buy_price` 使用 10:00 VWAP、`sell_price`
+使用 14:50 收盘前 VWAP）时，传统"先卖后买"回测会隐含地用当日尚未发生的
+卖出所得进行买入，违反 A 股 T+1 的真实物理时序。v1.3.0 引入
+`execution_order` 参数与**双轨（dual-track）**回测处理此场景。
+
+```python
+# 双轨回测：将 initial_capital 均分为两个逻辑资金池 A / B
+# Day T   : A 用 cash_A 在 10:00 建仓 signal_T ；B 在 14:50 清仓 signal_{T-1}
+# Day T+1 : B 用 cash_B 在 10:00 建仓 signal_{T+1}；A 清仓 signal_T
+# 每条 track 持有 1 天，天然满足 T+1
+results = bt.run_backtest_with_cash(
+    weights_data=weights_data,
+    price_data=price_data,
+    initial_capital=1_000_000,
+    buy_price='vwap_1000',           # 10:00 前后的 VWAP
+    sell_price='vwap_1450',          # 14:50 前后的 VWAP
+    close_price_col='close',
+    execution_order='buy_first',     # 启用双轨
+    dual_track_config={
+        'imbalance_threshold': 0.10, # |cap_A-cap_B|/total 超阈值时触发再平衡
+        'rebalance_gain': 0.5,       # 收敛系数
+        'initial_split': 0.5,        # 初始 cash_A 占比
+        'first_buy_track': 'A',      # Day 0 由 A 首建仓
+    },
+)
+
+# 结果多出的字段
+res_a = results['track_a']            # {'nav_series', 'cash_series'}
+res_b = results['track_b']
+results['imbalance_series']           # 每日不平衡度记录
+results['rebalance_events']           # 所有再平衡事件
+
+m = results['metrics']
+print(f"最大不平衡度: {m['最大不平衡度']:.2%}")
+print(f"再平衡次数:   {m['再平衡次数']}")
+```
+
+`trade_records` / `daily_positions` 在双轨下会新增 `track` 字段（`'A'` / `'B'`）
+用于区分归属。若未指定 `execution_order`，行为与 v1.2.x 完全一致。
+
 
 ### 可视化增强
 

@@ -90,6 +90,15 @@ class GeneralBacktest:
         self.trade_records = None
         self.turnover_records = None
         self.benchmark_name = "Benchmark"
+        # 双轨模式（v1.3.0 引入）标记及相关字段
+        self.is_dual_track = False
+        self.track_a_nav = None
+        self.track_b_nav = None
+        self.track_a_cash = None
+        self.track_b_cash = None
+        self.imbalance_records = None
+        self.rebalance_events = None
+
         
     def run_backtest(
         self,
@@ -862,8 +871,11 @@ class GeneralBacktest:
         buy_volume_col: Optional[str] = None,
         sell_volume_col: Optional[str] = None,
         benchmark_weights: Optional[pd.DataFrame] = None,
-        benchmark_name: str = "Benchmark"
+        benchmark_name: str = "Benchmark",
+        execution_order: str = 'sell_first',
+        dual_track_config: Optional[dict] = None
     ) -> Dict:
+
         """
         现金仓位回测：考虑实际股票价格和最小交易单位（手）的回测
 
@@ -943,13 +955,74 @@ class GeneralBacktest:
             - positions_df: 每日持仓（股数）
             - trade_records: 交易记录（含 intended_shares / constraint_hit 字段）
             - metrics: 性能指标（含 Avg Fill Ratio / Volume Constrained Ratio）
+
+        execution_order : str, optional (v1.3.0)
+            交易执行顺序模式：
+            - 'sell_first'（默认）：Case 1，单一资金池、卖出→买入。行为与 v1.2.x 完全一致，
+                适用于 sell 时段早于 buy 时段（如 sell@09:30, buy@14:30），或买卖同时段
+                的理想化场景。
+            - 'buy_first'：Case 2，启用**双轨（dual-track）**回测。此模式针对 sell 时段
+                晚于 buy 时段（如 buy@10:00, sell@14:50）的物理时序，避免"用当日尚未
+                发生的卖出所得去买入"这一 T+1 违约。物理模型为：
+                  • 将 initial_capital 均分为两个逻辑资金池 A、B
+                  • Day T：Track A 用 cash_A 在 10:00 买入 signal_T；Track B 在 14:50
+                    卖出上次持仓（Day T-1 买入的 signal_{T-1}），回流至 cash_B
+                  • Day T+1：Track B 用 cash_B 买入 signal_{T+1}；Track A 卖出 signal_T
+                  • 每条轨道 1 天持有周期，天然满足 T+1
+                两轨可能出现规模失衡，可通过 `dual_track_config` 中的
+                `imbalance_threshold` 触发同账户内的现金再平衡。
+
+        dual_track_config : dict, optional (v1.3.0)
+            仅当 execution_order='buy_first' 时生效。默认（若为 None）：
+                {
+                    'imbalance_threshold': 0.10,   # |capital_A - capital_B|/total 超过此值触发再平衡
+                    'rebalance_gain': 0.5,          # 每次再平衡的收敛系数（0..1，0.5 稳定）
+                    'initial_split': 0.5,           # 初始 cash_A:total 比例
+                    'first_buy_track': 'A',         # 冷启动阶段首日的 BUY-track
+                }
         """
 
         print("=" * 60)
         print("Start Cash-Based Backtesting...")
         print("=" * 60)
 
+        # ---------- v1.3.0：执行顺序模式分派 ----------
+        if execution_order not in ('sell_first', 'buy_first'):
+            raise ValueError(
+                f"execution_order 必须是 'sell_first' 或 'buy_first'，当前传入: {execution_order!r}"
+            )
+
+        if execution_order == 'buy_first':
+            # 双轨模式：委托到 _run_backtest_dual_track
+            print("  - Execution mode: buy_first (dual-track)")
+            return self._run_backtest_dual_track(
+                weights_data=weights_data,
+                price_data=price_data,
+                initial_capital=initial_capital,
+                buy_price=buy_price,
+                sell_price=sell_price,
+                close_price_col=close_price_col,
+                date_col=date_col,
+                asset_col=asset_col,
+                weight_col=weight_col,
+                lot_size=lot_size,
+                trade_critic=trade_critic,
+                transaction_cost=transaction_cost,
+                slippage=slippage,
+                volume_data=volume_data,
+                volume_col=volume_col,
+                buy_volume_col=buy_volume_col,
+                sell_volume_col=sell_volume_col,
+                benchmark_weights=benchmark_weights,
+                benchmark_name=benchmark_name,
+                dual_track_config=dual_track_config or {},
+            )
+
+        # execution_order == 'sell_first'：保留旧行为
+        print("  - Execution mode: sell_first (single-track, legacy)")
+
         self.benchmark_name = benchmark_name
+
 
         # 数据验证和预处理
         validate_data(weights_data, [date_col, asset_col, weight_col], "weights_data")
@@ -1484,6 +1557,610 @@ class GeneralBacktest:
 
         print("\n" + "=" * 60)
         print("Cash-Based Backtest Complete")
+        print("=" * 60)
+
+        return self.backtest_results
+
+
+    def _run_backtest_dual_track(
+        self,
+        weights_data: pd.DataFrame,
+        price_data: pd.DataFrame,
+        initial_capital: float,
+        buy_price: str,
+        sell_price: str,
+        close_price_col: str,
+        date_col: str,
+        asset_col: str,
+        weight_col: str,
+        lot_size: int,
+        trade_critic: str,
+        transaction_cost: List[float],
+        slippage: float,
+        volume_data: Optional[pd.DataFrame],
+        volume_col: str,
+        buy_volume_col: Optional[str],
+        sell_volume_col: Optional[str],
+        benchmark_weights: Optional[pd.DataFrame],
+        benchmark_name: str,
+        dual_track_config: dict,
+    ) -> Dict:
+        """
+        双轨（dual-track）现金回测实现（v1.3.0）。
+
+        物理模型：
+        - 将 initial_capital 均分为两个逻辑资金池 A、B（同一账户内，仅逻辑区分）
+        - 每日 10:00：其中一条 track 作为 BUY-track，用自身 cash 建仓 signal_today
+                      每日 14:50：两条 track 各自尝试清仓 **今日 10:00 之前** 已持有的股票
+                      （因此当天买入的头寸不会在同日 14:50 卖出，天然满足 T+1）
+        - 两条 track 每日角色轮换：Day 0 首日由 `first_buy_track` 建仓，Day 1 起另一条
+          track 建仓、原 track 清仓；如此错开一天形成 1 天持有周期的稳态
+
+        Rebalance（同账户逻辑挪现金）：
+        - 每日 10:00 BUY 之前，比较两条 track 的 (cash + MV_at_prev_close)
+        - 若 |cap_A - cap_B| / total > imbalance_threshold，则将差额中超出阈值的部分
+          乘以 rebalance_gain，作为待挪现金量，从资本高的 track 移向资本低的 track；
+          仅现金可挪，因此实际挪额受源 track 的现金余额上限约束
+
+        本方法在结构上尽量与 sell_first 单轨版本对齐（相同的 volume 约束逻辑、
+        相同的 trade_records 字段），仅新增 `track` 字段用于区分归属。
+        """
+
+        # ---------- 配置默认值 ----------
+        imbalance_threshold = float(dual_track_config.get('imbalance_threshold', 0.10))
+        rebalance_gain = float(dual_track_config.get('rebalance_gain', 0.5))
+        initial_split = float(dual_track_config.get('initial_split', 0.5))
+        first_buy_track = dual_track_config.get('first_buy_track', 'A')
+
+        if first_buy_track not in ('A', 'B'):
+            raise ValueError(
+                f"dual_track_config['first_buy_track'] 必须是 'A' 或 'B'，"
+                f"当前传入: {first_buy_track!r}"
+            )
+        if not (0.0 <= imbalance_threshold <= 1.0):
+            raise ValueError(
+                f"dual_track_config['imbalance_threshold'] 必须在 [0, 1] 范围内，"
+                f"当前传入: {imbalance_threshold}"
+            )
+        if not (0.0 <= rebalance_gain <= 1.0):
+            raise ValueError(
+                f"dual_track_config['rebalance_gain'] 必须在 [0, 1] 范围内，"
+                f"当前传入: {rebalance_gain}"
+            )
+        if not (0.0 < initial_split < 1.0):
+            raise ValueError(
+                f"dual_track_config['initial_split'] 必须在 (0, 1) 开区间，"
+                f"当前传入: {initial_split}"
+            )
+
+        print(f"  - Dual-track config: threshold={imbalance_threshold}, "
+              f"gain={rebalance_gain}, split={initial_split}, "
+              f"first_buy_track={first_buy_track}")
+
+        self.benchmark_name = benchmark_name
+
+        # ---------- 数据验证和预处理（与单轨一致） ----------
+        validate_data(weights_data, [date_col, asset_col, weight_col], "weights_data")
+        validate_data(
+            price_data,
+            [date_col, asset_col, buy_price, sell_price, close_price_col],
+            "price_data"
+        )
+
+        weights_data = weights_data.copy()
+        price_data = price_data.copy()
+        weights_data[date_col] = pd.to_datetime(weights_data[date_col])
+        price_data[date_col] = pd.to_datetime(price_data[date_col])
+
+        weights_data = weights_data[
+            (weights_data[date_col] >= self.start_date) &
+            (weights_data[date_col] <= self.end_date)
+        ]
+        price_data = price_data[
+            (price_data[date_col] >= self.start_date) &
+            (price_data[date_col] <= self.end_date)
+        ]
+
+        # 权重归一化到 1
+        weights_sum = weights_data.groupby(date_col)[weight_col].transform('sum')
+        weights_data[weight_col] = np.where(
+            weights_sum == 0, 0.0, weights_data[weight_col] / weights_sum
+        )
+
+        all_dates = sorted(price_data[date_col].unique())
+        rebalance_dates = sorted(weights_data[date_col].unique())
+
+        print(f"  - Total trading days: {len(all_dates)}")
+        print(f"  - Total rebalance days: {len(rebalance_dates)}")
+
+        # 价格透视表
+        p_close = price_data.pivot(index=date_col, columns=asset_col, values=close_price_col)
+        p_buy = price_data.pivot(index=date_col, columns=asset_col, values=buy_price)
+        p_sell = price_data.pivot(index=date_col, columns=asset_col, values=sell_price)
+
+        # ---------- volume_data 预处理（复用单轨逻辑） ----------
+        use_volume_constraint = volume_data is not None
+        p_buy_vol = None
+        p_sell_vol = None
+
+        if (buy_volume_col is None) ^ (sell_volume_col is None):
+            raise ValueError(
+                "`buy_volume_col` 与 `sell_volume_col` 必须同时指定或同时为 None，"
+                f"当前传入：buy_volume_col={buy_volume_col!r}, "
+                f"sell_volume_col={sell_volume_col!r}"
+            )
+
+        if use_volume_constraint:
+            use_split_cols = (buy_volume_col is not None) and (sell_volume_col is not None)
+            if use_split_cols:
+                vol_cols = [buy_volume_col, sell_volume_col]
+            else:
+                vol_cols = [volume_col]
+
+            validate_volume_data(
+                volume_data, date_col=date_col, asset_col=asset_col, volume_cols=vol_cols
+            )
+
+            vd = volume_data.copy()
+            vd[date_col] = pd.to_datetime(vd[date_col])
+            vd = vd[(vd[date_col] >= self.start_date) & (vd[date_col] <= self.end_date)]
+
+            if use_split_cols:
+                p_buy_vol = vd.pivot(index=date_col, columns=asset_col, values=buy_volume_col)
+                p_sell_vol = vd.pivot(index=date_col, columns=asset_col, values=sell_volume_col)
+                pool_mode = "split (buy/sell independent)"
+            else:
+                pv = vd.pivot(index=date_col, columns=asset_col, values=volume_col)
+                p_buy_vol = pv
+                p_sell_vol = pv
+                pool_mode = "shared (single pool for buy+sell)"
+
+            print(f"  - Volume constraint enabled (strict mode: missing => 0). "
+                  f"Pool mode: {pool_mode}")
+
+        def _get_tradable(pivot: Optional[pd.DataFrame], d, asset) -> Optional[float]:
+            if pivot is None:
+                return None
+            if d not in pivot.index or asset not in pivot.columns:
+                return 0.0
+            v = pivot.loc[d, asset]
+            if pd.isna(v):
+                return 0.0
+            return float(v)
+
+        def _mv(hd: dict, prices: pd.Series) -> float:
+            """按给定价格计算持仓市值。"""
+            total = 0.0
+            for a, sh in hd.items():
+                if a in prices.index and not pd.isna(prices[a]):
+                    total += sh * prices[a]
+            return total
+
+        # ---------- 初始化两条 track ----------
+        tracks = {
+            'A': {'cash': initial_capital * initial_split, 'holdings': {}},
+            'B': {'cash': initial_capital * (1.0 - initial_split), 'holdings': {}},
+        }
+        other = {'A': 'B', 'B': 'A'}
+
+        # ---------- 记录容器 ----------
+        nav_dict = {}
+        cash_dict = {}
+        track_nav_dict = {'A': {}, 'B': {}}
+        track_cash_dict = {'A': {}, 'B': {}}
+        imbalance_records = []
+        rebalance_events = []
+        trade_records = []
+        positions_records = []
+        turnover_records = []
+
+        total_intended_shares = 0.0
+        total_filled_shares = 0.0
+        volume_constrained_orders = 0
+        total_orders = 0
+
+        # ---------- 每日主循环 ----------
+        for i, date in enumerate(all_dates):
+            daily_close = p_close.loc[date]
+            prev_close = p_close.loc[all_dates[i - 1]] if i > 0 else daily_close
+
+            # 角色分派：Day 0 由 first_buy_track 建仓，之后每日轮换
+            if i % 2 == 0:
+                buy_track = first_buy_track
+            else:
+                buy_track = other[first_buy_track]
+            sell_track = other[buy_track]
+
+            # 关键：在任何交易之前，快照两条 track 的持仓
+            #   作为 14:50 SELL 阶段的"可卖清单"上限，从而排除今日 10:00 刚买入的头寸
+            sellable_snapshot = {
+                'A': dict(tracks['A']['holdings']),
+                'B': dict(tracks['B']['holdings']),
+            }
+
+            # ============================================================
+            # STEP 1: 10:00 BUY 之前的再平衡（同账户逻辑挪现金）
+            # ============================================================
+            cap_buy_track = tracks[buy_track]['cash'] + _mv(tracks[buy_track]['holdings'], prev_close)
+            cap_sell_track = tracks[sell_track]['cash'] + _mv(tracks[sell_track]['holdings'], prev_close)
+            total_cap = cap_buy_track + cap_sell_track
+            if total_cap > 0:
+                imbalance_pre = (cap_buy_track - cap_sell_track) / total_cap
+                if abs(imbalance_pre) > imbalance_threshold:
+                    excess = abs(cap_buy_track - cap_sell_track) - imbalance_threshold * total_cap
+                    move_intended = excess * rebalance_gain
+                    if cap_buy_track > cap_sell_track:
+                        src, dst = buy_track, sell_track
+                    else:
+                        src, dst = sell_track, buy_track
+                    # 仅现金可迁移
+                    move = min(move_intended, tracks[src]['cash'])
+                    move = max(0.0, move)
+                    if move > 0:
+                        tracks[src]['cash'] -= move
+                        tracks[dst]['cash'] += move
+                        rebalance_events.append({
+                            'date': date,
+                            'from_track': src,
+                            'to_track': dst,
+                            'amount': move,
+                            'imbalance_before': imbalance_pre,
+                            'cap_buy_track': cap_buy_track,
+                            'cap_sell_track': cap_sell_track,
+                        })
+
+            # ============================================================
+            # STEP 2: 10:00 BUY（仅 buy_track，仅在有信号的日子）
+            # ============================================================
+            is_rebalance = date in rebalance_dates
+            if is_rebalance:
+                buy_state = tracks[buy_track]
+                target_weights = (
+                    weights_data[weights_data[date_col] == date]
+                    .set_index(asset_col)[weight_col].to_dict()
+                )
+
+                # 该 track 独立的建仓资本：cash + 已有残余持仓的市值（以 daily_close 估价）
+                buy_track_capital = buy_state['cash'] + _mv(buy_state['holdings'], daily_close)
+
+                # 计算目标持仓（股数）
+                target_holdings = {}
+                for asset, weight in target_weights.items():
+                    if asset in p_buy.columns and date in p_buy.index:
+                        price = p_buy.loc[date, asset]
+                        if not pd.isna(price) and price > 0:
+                            target_value = buy_track_capital * weight
+                            target_shares = int(target_value / price / lot_size) * lot_size
+                            if target_shares > 0:
+                                target_holdings[asset] = target_shares
+
+                # 构建 buy_list（净买入需求）
+                buy_list = []
+                for asset, target in target_holdings.items():
+                    current = buy_state['holdings'].get(asset, 0)
+                    need = target - current
+                    if need > 0 and asset in p_buy.columns and date in p_buy.index:
+                        price = p_buy.loc[date, asset]
+                        if not pd.isna(price) and price > 0:
+                            buy_list.append({
+                                'asset': asset,
+                                'target': target,
+                                'buy_shares_needed': need,
+                                'price': price,
+                                'weight': target_weights.get(asset, 0),
+                            })
+
+                # 排序：dual-track 支持 weight_desc / weight_asc / amount_max
+                # amount_max 在双轨下退化为按金额降序的启发式排序（保持简洁）
+                if trade_critic == 'weight_desc':
+                    buy_list.sort(key=lambda x: x['weight'], reverse=True)
+                elif trade_critic == 'weight_asc':
+                    buy_list.sort(key=lambda x: x['weight'])
+                elif trade_critic == 'amount_max':
+                    buy_list.sort(
+                        key=lambda x: x['buy_shares_needed'] * x['price'],
+                        reverse=True,
+                    )
+                # 其它情况保持默认顺序
+
+                # 定义 track 内买入执行
+                def _execute_buy_track(item, state, tk):
+                    """在指定 track state 上执行买入。"""
+                    # 使用 nonlocal 修改外层作用域的累加器
+                    nonlocal total_orders, total_intended_shares
+                    nonlocal total_filled_shares, volume_constrained_orders
+
+                    asset = item['asset']
+                    intended = item['buy_shares_needed']
+                    price = item['price']
+                    exec_price = price * (1 + slippage)
+
+                    total_orders += 1
+                    total_intended_shares += intended
+
+                    buy_shares = intended
+                    constraint_hit = 'none'
+                    required_cash = buy_shares * exec_price * (1 + transaction_cost[0])
+                    if required_cash > state['cash']:
+                        affordable = int(
+                            state['cash'] / (exec_price * (1 + transaction_cost[0])) / lot_size
+                        ) * lot_size
+                        if affordable < buy_shares:
+                            constraint_hit = 'cash'
+                        buy_shares = affordable
+
+                    if use_volume_constraint:
+                        buy_limit = _get_tradable(p_buy_vol, date, asset)
+                        max_by_vol = int(min(buy_shares, buy_limit) / lot_size) * lot_size
+                        if max_by_vol < buy_shares:
+                            constraint_hit = 'volume'
+                        buy_shares = max_by_vol
+
+                    total_filled_shares += buy_shares
+                    if constraint_hit == 'volume':
+                        volume_constrained_orders += 1
+
+                    if buy_shares > 0:
+                        amount = buy_shares * exec_price
+                        cost = amount * transaction_cost[0]
+                        state['cash'] -= (amount + cost)
+                        state['holdings'][asset] = state['holdings'].get(asset, 0) + buy_shares
+                        trade_records.append({
+                            'date': date, 'track': tk, 'asset': asset, 'action': 'buy',
+                            'shares': buy_shares, 'intended_shares': intended,
+                            'constraint_hit': constraint_hit,
+                            'price': exec_price, 'amount': amount, 'commission': cost,
+                        })
+                        if use_volume_constraint and p_buy_vol is not None \
+                                and date in p_buy_vol.index and asset in p_buy_vol.columns:
+                            p_buy_vol.loc[date, asset] = max(
+                                0.0, p_buy_vol.loc[date, asset] - buy_shares
+                            )
+                    else:
+                        trade_records.append({
+                            'date': date, 'track': tk, 'asset': asset, 'action': 'buy',
+                            'shares': 0, 'intended_shares': intended,
+                            'constraint_hit': constraint_hit,
+                            'price': exec_price, 'amount': 0.0, 'commission': 0.0,
+                        })
+
+                for item in buy_list:
+                    _execute_buy_track(item, buy_state, buy_track)
+
+            # ============================================================
+            # STEP 3: 14:50 SELL（两条 track 都对 sellable_snapshot 尝试清仓）
+            #         共享 p_sell_vol 余量池（若启用 volume 约束）
+            # ============================================================
+            def _execute_sell_track(asset, intended, state, tk):
+                """在指定 track state 上执行卖出 intended 股。"""
+                nonlocal total_orders, total_intended_shares
+                nonlocal total_filled_shares, volume_constrained_orders
+
+                if intended <= 0:
+                    return
+                if asset not in p_sell.columns or date not in p_sell.index:
+                    return
+                price = p_sell.loc[date, asset]
+                if pd.isna(price) or price <= 0:
+                    return
+                exec_price = price * (1 - slippage)
+
+                total_orders += 1
+                total_intended_shares += intended
+
+                sell_shares = intended
+                constraint_hit = 'none'
+                if use_volume_constraint:
+                    sell_limit = _get_tradable(p_sell_vol, date, asset)
+                    max_sell = int(min(sell_shares, sell_limit) / lot_size) * lot_size
+                    if max_sell < sell_shares:
+                        constraint_hit = 'volume'
+                    sell_shares = max_sell
+
+                total_filled_shares += sell_shares
+                if constraint_hit == 'volume':
+                    volume_constrained_orders += 1
+
+                if sell_shares > 0:
+                    proceeds = sell_shares * exec_price
+                    cost = proceeds * transaction_cost[1]
+                    state['cash'] += proceeds - cost
+                    state['holdings'][asset] = state['holdings'].get(asset, 0) - sell_shares
+                    if state['holdings'][asset] <= 0:
+                        del state['holdings'][asset]
+                    trade_records.append({
+                        'date': date, 'track': tk, 'asset': asset, 'action': 'sell',
+                        'shares': sell_shares, 'intended_shares': intended,
+                        'constraint_hit': constraint_hit,
+                        'price': exec_price, 'amount': proceeds, 'commission': cost,
+                    })
+                    if use_volume_constraint and p_sell_vol is not None \
+                            and date in p_sell_vol.index and asset in p_sell_vol.columns:
+                        p_sell_vol.loc[date, asset] = max(
+                            0.0, p_sell_vol.loc[date, asset] - sell_shares
+                        )
+                else:
+                    trade_records.append({
+                        'date': date, 'track': tk, 'asset': asset, 'action': 'sell',
+                        'shares': 0, 'intended_shares': intended,
+                        'constraint_hit': constraint_hit,
+                        'price': exec_price, 'amount': 0.0, 'commission': 0.0,
+                    })
+
+            # 两条 track 各自尝试清仓 sellable_snapshot 中的头寸
+            #   注意：intended = min(snapshot_shares, current_shares_in_state)
+            #   snapshot 保证不会误卖今日刚买入的部分；current 保证不会超卖
+            for tk in ('A', 'B'):
+                state = tracks[tk]
+                snap = sellable_snapshot[tk]
+                if not snap:
+                    continue
+                for asset, snap_shares in list(snap.items()):
+                    if snap_shares <= 0:
+                        continue
+                    current = state['holdings'].get(asset, 0)
+                    if current <= 0:
+                        continue
+                    intended = int(min(snap_shares, current) / lot_size) * lot_size
+                    _execute_sell_track(asset, intended, state, tk)
+
+            # ============================================================
+            # STEP 4: 收盘结算
+            # ============================================================
+            nav_a = tracks['A']['cash'] + _mv(tracks['A']['holdings'], daily_close)
+            nav_b = tracks['B']['cash'] + _mv(tracks['B']['holdings'], daily_close)
+            nav_total = nav_a + nav_b
+            nav_dict[date] = nav_total
+            cash_dict[date] = tracks['A']['cash'] + tracks['B']['cash']
+            track_nav_dict['A'][date] = nav_a
+            track_nav_dict['B'][date] = nav_b
+            track_cash_dict['A'][date] = tracks['A']['cash']
+            track_cash_dict['B'][date] = tracks['B']['cash']
+            imb = (nav_a - nav_b) / nav_total if nav_total > 0 else 0.0
+            imbalance_records.append({
+                'date': date, 'imbalance': imb,
+                'nav_a': nav_a, 'nav_b': nav_b,
+                'cash_a': tracks['A']['cash'], 'cash_b': tracks['B']['cash'],
+            })
+
+            # 持仓记录
+            for tk in ('A', 'B'):
+                for asset, shares in tracks[tk]['holdings'].items():
+                    if shares > 0:
+                        mv = 0.0
+                        if asset in daily_close.index and not pd.isna(daily_close[asset]):
+                            mv = shares * daily_close[asset]
+                        positions_records.append({
+                            'date': date, 'track': tk, 'asset': asset,
+                            'shares': shares, 'market_value': mv,
+                        })
+
+            # 当日换手率（基于当日成交金额）
+            daily_traded_amount = sum(
+                t['amount'] for t in trade_records if t['date'] == date
+            )
+            if nav_total > 0:
+                turnover = (daily_traded_amount / 2) / nav_total
+                turnover_records.append({'date': date, 'turnover': turnover})
+
+        # ---------- 结果整理 ----------
+        self.daily_nav = pd.Series(nav_dict, name='nav').sort_index()
+        cash_series = pd.Series(cash_dict, name='cash').sort_index()
+        self.cash_series = cash_series
+        self.track_a_nav = pd.Series(track_nav_dict['A']).sort_index()
+        self.track_b_nav = pd.Series(track_nav_dict['B']).sort_index()
+        self.track_a_cash = pd.Series(track_cash_dict['A']).sort_index()
+        self.track_b_cash = pd.Series(track_cash_dict['B']).sort_index()
+        self.imbalance_records = pd.DataFrame(imbalance_records)
+        self.rebalance_events = pd.DataFrame(rebalance_events)
+        self.daily_positions = pd.DataFrame(positions_records)
+        self.trade_records = pd.DataFrame(trade_records)
+        self.turnover_records = pd.DataFrame(turnover_records)
+        self.is_dual_track = True
+
+        print(f"  - Final NAV: {self.daily_nav.iloc[-1]:,.2f}")
+        print(f"  - Final Cash: {cash_series.iloc[-1]:,.2f}")
+        print(f"  - Track A final NAV: {self.track_a_nav.iloc[-1]:,.2f}")
+        print(f"  - Track B final NAV: {self.track_b_nav.iloc[-1]:,.2f}")
+        print(f"  - Total trades: {len(self.trade_records)}")
+        print(f"  - Rebalance events: {len(self.rebalance_events)}")
+
+        # ---------- 基准（复用单轨逻辑） ----------
+        benchmark_nav = None
+        if benchmark_weights is not None:
+            benchmark_weights = benchmark_weights.copy()
+            benchmark_weights[date_col] = pd.to_datetime(benchmark_weights[date_col])
+            benchmark_weights = benchmark_weights[
+                (benchmark_weights[date_col] >= self.start_date) &
+                (benchmark_weights[date_col] <= self.end_date)
+            ]
+            bench_sum = benchmark_weights.groupby(date_col)[weight_col].transform('sum')
+            benchmark_weights[weight_col] = np.where(
+                bench_sum == 0, 0.0, benchmark_weights[weight_col] / bench_sum
+            )
+
+            bench_nav = initial_capital
+            bench_nav_dict = {}
+            bench_positions = {}
+            bench_rebalance_dates = sorted(benchmark_weights[date_col].unique())
+
+            for i, date in enumerate(all_dates):
+                daily_close = p_close.loc[date]
+                is_rebalance = date in bench_rebalance_dates
+                if is_rebalance:
+                    target = benchmark_weights[benchmark_weights[date_col] == date] \
+                        .set_index(asset_col)[weight_col]
+                    bench_positions = target.to_dict()
+                if i > 0 and bench_positions:
+                    prev_date = all_dates[i - 1]
+                    prev_c = p_close.loc[prev_date]
+                    port_ret = 0
+                    for asset, w in bench_positions.items():
+                        if asset in daily_close.index and asset in prev_c.index:
+                            if not pd.isna(daily_close[asset]) and not pd.isna(prev_c[asset]) \
+                                    and prev_c[asset] > 0:
+                                ret = (daily_close[asset] - prev_c[asset]) / prev_c[asset]
+                                port_ret += w * ret
+                    bench_nav *= (1 + port_ret)
+                bench_nav_dict[date] = bench_nav
+
+            benchmark_nav = pd.Series(bench_nav_dict, name='benchmark').sort_index()
+
+        # ---------- 评价指标 ----------
+        self.metrics = calculate_all_metrics(
+            nav_series=self.daily_nav,
+            benchmark_nav=benchmark_nav,
+            trade_dates=rebalance_dates,
+        )
+
+        # 现金相关指标
+        self.metrics['最终现金余额'] = cash_series.iloc[-1]
+        self.metrics['最终现金占比'] = cash_series.iloc[-1] / self.daily_nav.iloc[-1]
+        self.metrics['平均现金占比'] = (cash_series / self.daily_nav).mean()
+
+        # 订单填充率指标
+        if total_intended_shares > 0:
+            self.metrics['平均订单填充率'] = total_filled_shares / total_intended_shares
+        else:
+            self.metrics['平均订单填充率'] = 1.0
+        if total_orders > 0:
+            self.metrics['量约束订单占比'] = volume_constrained_orders / total_orders
+        else:
+            self.metrics['量约束订单占比'] = 0.0
+        self.metrics['订单总数'] = int(total_orders)
+
+        # 双轨专属指标
+        if len(self.imbalance_records) > 0:
+            imb_series = self.imbalance_records['imbalance']
+            self.metrics['最大不平衡度'] = float(imb_series.abs().max())
+            self.metrics['平均不平衡度'] = float(imb_series.abs().mean())
+        else:
+            self.metrics['最大不平衡度'] = 0.0
+            self.metrics['平均不平衡度'] = 0.0
+        self.metrics['再平衡次数'] = int(len(self.rebalance_events))
+
+        # ---------- 整理返回结果 ----------
+        self.backtest_results = {
+            'nav_series': self.daily_nav,
+            'cash_series': cash_series,
+            'positions_df': self.daily_positions,
+            'trade_records': self.trade_records,
+            'metrics': self.metrics,
+            'benchmark_nav': benchmark_nav,
+            'track_a': {
+                'nav_series': self.track_a_nav,
+                'cash_series': self.track_a_cash,
+            },
+            'track_b': {
+                'nav_series': self.track_b_nav,
+                'cash_series': self.track_b_cash,
+            },
+            'imbalance_series': self.imbalance_records,
+            'rebalance_events': self.rebalance_events,
+        }
+
+        print("\n" + "=" * 60)
+        print("Cash-Based Backtest Complete (dual-track / buy_first)")
         print("=" * 60)
 
         return self.backtest_results
