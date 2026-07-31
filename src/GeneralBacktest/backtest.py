@@ -27,16 +27,17 @@ except ImportError as e:
 # 灵活导入utils模块
 try:
     from .utils import (
-        validate_data, align_dates, calculate_all_metrics,
+        validate_data, validate_volume_data, align_dates, calculate_all_metrics,
         calculate_returns, calculate_max_drawdown, calculate_turnover,
         calculate_transaction_costs, calculate_monthly_returns, calculate_adjusted_weights
     )
 except ImportError:
     from utils import (
-        validate_data, align_dates, calculate_all_metrics,
+        validate_data, validate_volume_data, align_dates, calculate_all_metrics,
         calculate_returns, calculate_max_drawdown, calculate_turnover,
         calculate_transaction_costs, calculate_monthly_returns, calculate_adjusted_weights
     )
+
 
 # 设置中文字体支持（仅在 matplotlib 可用时）
 try:
@@ -856,6 +857,10 @@ class GeneralBacktest:
         trade_critic: str = 'weight_desc',
         transaction_cost: List[float] = [0.001, 0.001],
         slippage: float = 0.0,
+        volume_data: Optional[pd.DataFrame] = None,
+        volume_col: str = 'tradable_shares',
+        buy_volume_col: Optional[str] = None,
+        sell_volume_col: Optional[str] = None,
         benchmark_weights: Optional[pd.DataFrame] = None,
         benchmark_name: str = "Benchmark"
     ) -> Dict:
@@ -866,6 +871,7 @@ class GeneralBacktest:
         1. 追踪实际的股票持仓数量（股数）和现金余额
         2. 考虑最小交易单位（每手 lot_size 股）
         3. 交易可能因现金不足而无法完全执行
+        4. 可选：考虑用户传入的每日可成交量上限（volume_data）
 
         Parameters:
         -----------
@@ -888,7 +894,7 @@ class GeneralBacktest:
         weight_col : str
             权重列名
         lot_size : int
-            每手股数，默认100（A股）
+            每手股数，默认100（A股)
         trade_critic : str
             交易优先级策略：
             - 'weight_desc': 按目标权重从大到小交易（优先保证大权重标的）
@@ -898,6 +904,22 @@ class GeneralBacktest:
             交易成本 [买入费率, 卖出费率]
         slippage : float
             滑点率
+        volume_data : pd.DataFrame, optional
+            可成交量数据（在给定 buy_price / sell_price 下，用户在外部按分钟数据自行计算
+            得到的当日最大可成交股数）。
+            - 若为 None：不施加量约束，行为与旧版本一致。
+            - 若不为 None：**严格模式** —— (date, code) 未出现在 volume_data 中的样本
+              视为当日不可交易（tradable_shares=0）。
+            必要列: [date_col, asset_col, volume_col] 或者
+                    [date_col, asset_col, buy_volume_col, sell_volume_col]
+        volume_col : str
+            共用列名，默认 'tradable_shares'（同时作为买卖上限）。
+            当 buy_volume_col / sell_volume_col 同时指定时忽略此参数。
+        buy_volume_col : str, optional
+            单独指定"买入可成交量"列名（可为 None）
+        sell_volume_col : str, optional
+            单独指定"卖出可成交量"列名（可为 None）
+            注意：若指定其一，必须两者都指定；否则回退到 volume_col。
         benchmark_weights : pd.DataFrame, optional
             基准权重数据
         benchmark_name : str
@@ -910,9 +932,10 @@ class GeneralBacktest:
             - nav_series: 每日净值
             - cash_series: 每日现金余额
             - positions_df: 每日持仓（股数）
-            - trade_records: 交易记录
-            - metrics: 性能指标
+            - trade_records: 交易记录（含 intended_shares / constraint_hit 字段）
+            - metrics: 性能指标（含 Avg Fill Ratio / Volume Constrained Ratio）
         """
+
         print("=" * 60)
         print("Start Cash-Based Backtesting...")
         print("=" * 60)
@@ -954,6 +977,58 @@ class GeneralBacktest:
         p_buy = price_data.pivot(index=date_col, columns=asset_col, values=buy_price)
         p_sell = price_data.pivot(index=date_col, columns=asset_col, values=sell_price)
 
+        # ---------- volume_data 预处理 ----------
+        # 判定是否施加量约束以及买/卖是否共用同一上限
+        use_volume_constraint = volume_data is not None
+        p_buy_vol = None
+        p_sell_vol = None
+
+        if use_volume_constraint:
+            # 决定使用共用列还是买卖独立列
+            use_split_cols = (buy_volume_col is not None) and (sell_volume_col is not None)
+
+            if use_split_cols:
+                vol_cols = [buy_volume_col, sell_volume_col]
+            else:
+                vol_cols = [volume_col]
+
+            # 数据校验
+            validate_volume_data(volume_data,
+                                 date_col=date_col,
+                                 asset_col=asset_col,
+                                 volume_cols=vol_cols)
+
+            # 复制并做日期类型对齐
+            vd = volume_data.copy()
+            vd[date_col] = pd.to_datetime(vd[date_col])
+            vd = vd[(vd[date_col] >= self.start_date) & (vd[date_col] <= self.end_date)]
+
+            if use_split_cols:
+                p_buy_vol = vd.pivot(index=date_col, columns=asset_col, values=buy_volume_col)
+                p_sell_vol = vd.pivot(index=date_col, columns=asset_col, values=sell_volume_col)
+            else:
+                pv = vd.pivot(index=date_col, columns=asset_col, values=volume_col)
+                p_buy_vol = pv
+                p_sell_vol = pv
+
+            print(f"  - Volume constraint enabled (strict mode: missing => 0). "
+                  f"Split cols: {use_split_cols}")
+
+        def _get_tradable(pivot: Optional[pd.DataFrame], date, asset) -> Optional[float]:
+            """
+            读取指定 (date, asset) 的可成交量上限（股）。
+            - 若未启用量约束 (pivot is None) 返回 None（表示"不施加约束"）
+            - 若启用但 (date, asset) 缺失或 NaN => 严格模式下返回 0
+            """
+            if pivot is None:
+                return None
+            if date not in pivot.index or asset not in pivot.columns:
+                return 0.0
+            v = pivot.loc[date, asset]
+            if pd.isna(v):
+                return 0.0
+            return float(v)
+
         # 初始化状态
         cash = initial_capital
         holdings = {}  # {asset: shares} 持仓股数
@@ -964,6 +1039,13 @@ class GeneralBacktest:
         trade_records = []
         positions_records = []
         turnover_records = []  # 换手率记录
+
+        # 用于跨调仓日聚合 fill ratio 的累加器
+        total_intended_shares = 0.0
+        total_filled_shares = 0.0
+        volume_constrained_orders = 0
+        total_orders = 0
+
 
         for i, date in enumerate(all_dates):
             daily_close = p_close.loc[date]
@@ -997,28 +1079,70 @@ class GeneralBacktest:
                     if shares > target:
                         sell_list.append((asset, shares - target))
 
-                for asset, sell_shares in sell_list:
+                for asset, intended_sell_shares in sell_list:
                     if asset in p_sell.columns and date in p_sell.index:
                         price = p_sell.loc[date, asset]
                         if not pd.isna(price) and price > 0:
                             exec_price = price * (1 - slippage)
-                            proceeds = sell_shares * exec_price
-                            cost = proceeds * transaction_cost[1]
-                            cash += proceeds - cost
 
-                            trade_records.append({
-                                'date': date,
-                                'asset': asset,
-                                'action': 'sell',
-                                'shares': sell_shares,
-                                'price': exec_price,
-                                'amount': proceeds,
-                                'commission': cost
-                            })
+                            # 应用可成交量约束（严格模式）
+                            sell_shares = intended_sell_shares
+                            constraint_hit = 'none'
+                            if use_volume_constraint:
+                                sell_limit = _get_tradable(p_sell_vol, date, asset)
+                                # 按 lot_size 向下取整
+                                max_sell = int(min(sell_shares, sell_limit) / lot_size) * lot_size
+                                if max_sell < sell_shares:
+                                    constraint_hit = 'volume'
+                                sell_shares = max_sell
 
-                            holdings[asset] = holdings.get(asset, 0) - sell_shares
-                            if holdings[asset] <= 0:
-                                del holdings[asset]
+                            total_orders += 1
+                            total_intended_shares += intended_sell_shares
+                            total_filled_shares += sell_shares
+                            if constraint_hit == 'volume':
+                                volume_constrained_orders += 1
+
+                            if sell_shares > 0:
+                                proceeds = sell_shares * exec_price
+                                cost = proceeds * transaction_cost[1]
+                                cash += proceeds - cost
+
+                                trade_records.append({
+                                    'date': date,
+                                    'asset': asset,
+                                    'action': 'sell',
+                                    'shares': sell_shares,
+                                    'intended_shares': intended_sell_shares,
+                                    'constraint_hit': constraint_hit,
+                                    'price': exec_price,
+                                    'amount': proceeds,
+                                    'commission': cost
+                                })
+
+                                # 扣减 sell volume 余量
+                                if use_volume_constraint and p_sell_vol is not None \
+                                        and date in p_sell_vol.index and asset in p_sell_vol.columns:
+                                    p_sell_vol.loc[date, asset] = max(
+                                        0.0, p_sell_vol.loc[date, asset] - sell_shares
+                                    )
+
+                                holdings[asset] = holdings.get(asset, 0) - sell_shares
+                                if holdings[asset] <= 0:
+                                    del holdings[asset]
+                            else:
+                                # 完全被量约束卡住，仍记录一笔零成交
+                                trade_records.append({
+                                    'date': date,
+                                    'asset': asset,
+                                    'action': 'sell',
+                                    'shares': 0,
+                                    'intended_shares': intended_sell_shares,
+                                    'constraint_hit': constraint_hit,
+                                    'price': exec_price,
+                                    'amount': 0.0,
+                                    'commission': 0.0
+                                })
+
 
                 # 第二步：按顺序买入
                 # 构建待买入列表
@@ -1038,64 +1162,99 @@ class GeneralBacktest:
                                 'weight': target_weights.get(asset, 0)
                             })
 
+                # ---------- 定义统一的买入执行函数 ----------
+                def _execute_buy(item):
+                    """
+                    对单个 buy_list item 执行买入操作，
+                    综合考虑：cash 约束、lot_size、可成交量约束（若启用）。
+                    直接修改闭包中的 cash / holdings / trade_records 等。
+                    """
+                    nonlocal cash, total_orders, total_intended_shares, \
+                        total_filled_shares, volume_constrained_orders
+
+                    asset = item['asset']
+                    intended = item['buy_shares_needed']
+                    price = item['price']
+                    exec_price = price * (1 + slippage)
+
+                    total_orders += 1
+                    total_intended_shares += intended
+
+                    # 1) cash 约束
+                    buy_shares = intended
+                    constraint_hit = 'none'
+                    required_cash = buy_shares * exec_price * (1 + transaction_cost[0])
+                    if required_cash > cash:
+                        affordable_shares = int(cash / (exec_price * (1 + transaction_cost[0])) / lot_size) * lot_size
+                        if affordable_shares < buy_shares:
+                            constraint_hit = 'cash'
+                        buy_shares = affordable_shares
+
+                    # 2) volume 约束
+                    if use_volume_constraint:
+                        buy_limit = _get_tradable(p_buy_vol, date, asset)
+                        max_by_vol = int(min(buy_shares, buy_limit) / lot_size) * lot_size
+                        if max_by_vol < buy_shares:
+                            constraint_hit = 'volume'
+                        buy_shares = max_by_vol
+
+                    total_filled_shares += buy_shares
+                    if constraint_hit == 'volume':
+                        volume_constrained_orders += 1
+
+                    if buy_shares > 0:
+                        amount = buy_shares * exec_price
+                        cost = amount * transaction_cost[0]
+                        cash -= (amount + cost)
+                        trade_records.append({
+                            'date': date, 'asset': asset, 'action': 'buy',
+                            'shares': buy_shares,
+                            'intended_shares': intended,
+                            'constraint_hit': constraint_hit,
+                            'price': exec_price,
+                            'amount': amount, 'commission': cost
+                        })
+                        holdings[asset] = holdings.get(asset, 0) + buy_shares
+
+                        # 扣减 buy volume 余量
+                        if use_volume_constraint and p_buy_vol is not None \
+                                and date in p_buy_vol.index and asset in p_buy_vol.columns:
+                            p_buy_vol.loc[date, asset] = max(
+                                0.0, p_buy_vol.loc[date, asset] - buy_shares
+                            )
+                    else:
+                        # 记录一笔零成交
+                        trade_records.append({
+                            'date': date, 'asset': asset, 'action': 'buy',
+                            'shares': 0,
+                            'intended_shares': intended,
+                            'constraint_hit': constraint_hit,
+                            'price': exec_price,
+                            'amount': 0.0, 'commission': 0.0
+                        })
+
                 # 根据 trade_critic 策略确定交易顺序
                 if trade_critic == 'weight_desc':
                     # 按权重从大到小排序
                     buy_list.sort(key=lambda x: x['weight'], reverse=True)
                     for item in buy_list:
-                        asset = item['asset']
-                        buy_shares = item['buy_shares_needed']
-                        price = item['price']
-                        exec_price = price * (1 + slippage)
-
-                        required_cash = buy_shares * exec_price * (1 + transaction_cost[0])
-                        if required_cash > cash:
-                            affordable_shares = int(cash / (exec_price * (1 + transaction_cost[0])) / lot_size) * lot_size
-                            buy_shares = affordable_shares
-
-                        if buy_shares > 0:
-                            amount = buy_shares * exec_price
-                            cost = amount * transaction_cost[0]
-                            cash -= (amount + cost)
-                            trade_records.append({
-                                'date': date, 'asset': asset, 'action': 'buy',
-                                'shares': buy_shares, 'price': exec_price,
-                                'amount': amount, 'commission': cost
-                            })
-                            holdings[asset] = holdings.get(asset, 0) + buy_shares
+                        _execute_buy(item)
 
                 elif trade_critic == 'weight_asc':
                     # 按权重从小到大排序
                     buy_list.sort(key=lambda x: x['weight'])
                     for item in buy_list:
-                        asset = item['asset']
-                        buy_shares = item['buy_shares_needed']
-                        price = item['price']
-                        exec_price = price * (1 + slippage)
+                        _execute_buy(item)
 
-                        required_cash = buy_shares * exec_price * (1 + transaction_cost[0])
-                        if required_cash > cash:
-                            affordable_shares = int(cash / (exec_price * (1 + transaction_cost[0])) / lot_size) * lot_size
-                            buy_shares = affordable_shares
-
-                        if buy_shares > 0:
-                            amount = buy_shares * exec_price
-                            cost = amount * transaction_cost[0]
-                            cash -= (amount + cost)
-                            trade_records.append({
-                                'date': date, 'asset': asset, 'action': 'buy',
-                                'shares': buy_shares, 'price': exec_price,
-                                'amount': amount, 'commission': cost
-                            })
-                            holdings[asset] = holdings.get(asset, 0) + buy_shares
 
                 elif trade_critic == 'amount_max':
                     # 最大化总成交金额策略
                     # 通过尝试多种排列组合，找到使总成交金额最大的交易顺序
+                    # 注：模拟阶段仅考虑 cash 约束（volume 约束在真实执行时才会再次施加）
                     from itertools import permutations
 
                     def calculate_total_traded(order, available_cash):
-                        """模拟按给定顺序交易，返回总成交金额"""
+                        """模拟按给定顺序交易，返回总成交金额（仅考虑 cash 约束）"""
                         temp_cash = available_cash
                         total_amount = 0
                         for item in order:
@@ -1140,27 +1299,10 @@ class GeneralBacktest:
                                 best_total = total
                                 best_order = cand
 
-                    # 按最优顺序执行交易
+                    # 按最优顺序执行交易（复用统一执行函数，自然含 volume 约束）
                     for item in best_order:
-                        asset = item['asset']
-                        buy_shares = item['buy_shares_needed']
-                        price = item['price']
-                        exec_price = price * (1 + slippage)
+                        _execute_buy(item)
 
-                        required_cash = buy_shares * exec_price * (1 + transaction_cost[0])
-                        if required_cash > cash:
-                            buy_shares = int(cash / (exec_price * (1 + transaction_cost[0])) / lot_size) * lot_size
-
-                        if buy_shares > 0:
-                            amount = buy_shares * exec_price
-                            cost = amount * transaction_cost[0]
-                            cash -= (amount + cost)
-                            trade_records.append({
-                                'date': date, 'asset': asset, 'action': 'buy',
-                                'shares': buy_shares, 'price': exec_price,
-                                'amount': amount, 'commission': cost
-                            })
-                            holdings[asset] = holdings.get(asset, 0) + buy_shares
 
                 # 计算当日换手率（基于交易金额）
                 daily_trades = [t for t in trade_records if t['date'] == date]
@@ -1253,6 +1395,20 @@ class GeneralBacktest:
         self.metrics['最终现金余额'] = cash_series.iloc[-1]
         self.metrics['最终现金占比'] = cash_series.iloc[-1] / self.daily_nav.iloc[-1]
         self.metrics['平均现金占比'] = (cash_series / self.daily_nav).mean()
+
+        # 添加订单填充率相关指标（仅在启用量约束或有订单时有意义）
+        if total_intended_shares > 0:
+            self.metrics['平均订单填充率'] = total_filled_shares / total_intended_shares
+        else:
+            self.metrics['平均订单填充率'] = 1.0
+
+        if total_orders > 0:
+            self.metrics['量约束订单占比'] = volume_constrained_orders / total_orders
+        else:
+            self.metrics['量约束订单占比'] = 0.0
+
+        self.metrics['订单总数'] = int(total_orders)
+
 
         # 整理回测结果
         self.backtest_results = {

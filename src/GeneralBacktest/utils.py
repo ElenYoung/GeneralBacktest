@@ -406,6 +406,62 @@ def validate_data(df: pd.DataFrame, required_cols: list, name: str = "DataFrame"
         raise ValueError(f"{name} lacking of `{missing_cols}`")
 
 
+def validate_volume_data(volume_data: pd.DataFrame,
+                         date_col: str = 'date',
+                         asset_col: str = 'code',
+                         volume_cols: Optional[list] = None) -> None:
+    """
+    验证可成交量数据框
+    
+    要求：
+    - 必须包含 date_col、asset_col 以及至少一个可成交量列
+    - 可成交量列均为非负数值
+    - (date, code) 组合不重复
+    
+    Parameters:
+    -----------
+    volume_data : pd.DataFrame
+        可成交量数据框
+    date_col : str
+        日期列名
+    asset_col : str
+        资产代码列名
+    volume_cols : list
+        可成交量列名列表（可包含 1~2 列，如 ['tradable_shares'] 或
+        ['buy_tradable_shares', 'sell_tradable_shares']）
+    
+    Raises:
+    -------
+    ValueError
+        - 缺失列
+        - 存在负数
+        - (date, code) 组合重复
+    """
+    if volume_cols is None or len(volume_cols) == 0:
+        raise ValueError("validate_volume_data: volume_cols cannot be empty")
+
+    required = [date_col, asset_col] + list(volume_cols)
+    validate_data(volume_data, required, "volume_data")
+
+    # 检查非负
+    for col in volume_cols:
+        col_min = volume_data[col].min()
+        if pd.notna(col_min) and col_min < 0:
+            raise ValueError(
+                f"volume_data column `{col}` contains negative values (min={col_min})"
+            )
+
+    # 检查 (date, code) 唯一
+    dup = volume_data.duplicated(subset=[date_col, asset_col])
+    if dup.any():
+        n_dup = int(dup.sum())
+        raise ValueError(
+            f"volume_data has {n_dup} duplicated (date, code) rows; "
+            f"please aggregate before backtest"
+        )
+
+
+
 def align_dates(df1: pd.DataFrame, df2: pd.DataFrame, date_col: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
     对齐两个数据框的日期

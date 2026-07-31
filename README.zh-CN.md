@@ -101,6 +101,45 @@ bt.plot_all()
 - 最小交易单位（如每手 100 股）
 - 现金约束（现金不足不能买入）
 - 交易优先级策略
+- **可成交量约束**（v1.2.0 新增）
+
+#### 可成交量约束（v1.2.0）
+
+通过传入 `volume_data`，为每个 `(date, code)` 施加**严格**的当日可成交股数上限。
+可成交量的计算逻辑（如分钟量能、VWAP 参与率、订单簿深度等）由用户在外部完成，
+回测框架只作为一个通用的执行约束层。
+
+```python
+# volume_data 至少包含: date, code, tradable_shares
+# 未出现的 (date, code) => 严格视为当日不可交易（0 股）
+results = bt.run_backtest_with_cash(
+    weights_data=weights_data,
+    price_data=price_data,
+    initial_capital=1_000_000,
+    buy_price='open',
+    sell_price='close',
+    close_price_col='close',
+    lot_size=100,
+    volume_data=volume_df,
+    volume_col='tradable_shares',       # 共用买卖上限
+    # 也可拆分买卖:
+    # buy_volume_col='buy_tradable_shares',
+    # sell_volume_col='sell_tradable_shares',
+)
+
+m = results['metrics']
+print(f"平均订单填充率: {m['平均订单填充率']:.2%}")
+print(f"量约束订单占比: {m['量约束订单占比']:.2%}")
+print(f"订单总数:       {m['订单总数']}")
+```
+
+`trade_records` 会新增两列：
+- `intended_shares`：受约束前原本想成交的股数
+- `constraint_hit`：命中的约束类型（`'none' / 'cash' / 'volume'`）
+
+**注意**：框架不做跨日顺延——用户需要保证 `buy_price` / `sell_price` 与
+`tradable_shares` 是同一天的量价对齐结果。
+
 
 ### 可视化增强
 

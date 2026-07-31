@@ -148,6 +148,39 @@ print(f"Final Cash: {results['cash_series'].iloc[-1]:,.2f}")
 print(f"Cash Ratio: {results['metrics']['Cash Ratio']:.2%}")
 ```
 
+#### Tradable Volume Constraint (v1.2.0)
+
+Pass a `volume_data` DataFrame to add a **strict tradable-volume upper bound**
+per (date, code). This decouples the framework from any specific intraday
+model: the user computes `tradable_shares` externally (e.g., from minute
+data, VWAP participation, order-book depth) and simply hands the result to
+the backtester.
+
+```python
+# volume_data columns: date, code, tradable_shares
+# (any (date, code) not present -> STRICTLY 0, i.e. not tradable that day)
+results = bt.run_backtest_with_cash(
+    weights_data=weights_data,
+    price_data=price_data,
+    initial_capital=1_000_000,
+    buy_price="open",
+    sell_price="close",
+    close_price_col="close",
+    lot_size=100,
+    volume_data=volume_df,
+    volume_col="tradable_shares",   # or use buy_volume_col/sell_volume_col to split
+)
+
+m = results['metrics']
+print(f"Avg Fill Ratio:        {m['平均订单填充率']:.2%}")
+print(f"Volume-Constrained %:  {m['量约束订单占比']:.2%}")
+print(f"Total Orders:          {m['订单总数']}")
+```
+
+Trade records add `intended_shares` and `constraint_hit` columns
+(`'none' | 'cash' | 'volume'`).
+
+
 ### ETF Database Backtest (Requires DB Config)
 
 `run_backtest_ETF()` and `run_backtest_stock()` need a valid database config. For general usage, `run_backtest()` is recommended.
