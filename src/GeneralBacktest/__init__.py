@@ -36,6 +36,7 @@ except ImportError:
 from .backtest import GeneralBacktest
 from .tbacktest import TBacktest
 
-__version__ = '1.2.0'
+__version__ = '1.2.1'
+
 __author__ = 'Elen Young'
 __all__ = ['GeneralBacktest', 'TBacktest']
