@@ -821,8 +821,8 @@ class GeneralBacktest:
         sql = f"""
         WITH
             prices as (
-                SELECT  * 
-                FROM stocks.daily_adj_tushare2
+                SELECT  *
+                FROM stocks.daily_adj_tushare
                 WHERE and(date>='{self.start_date.strftime(format='%Y-%m-%d')}', 
                           date<='{self.end_date.strftime(format='%Y-%m-%d')}')
                 ORDER BY code, date
@@ -873,6 +873,8 @@ class GeneralBacktest:
         benchmark_weights: Optional[pd.DataFrame] = None,
         benchmark_name: str = "Benchmark",
         execution_order: str = 'sell_first',
+        netting: bool = True,
+        sizing_price: str = 'buy_price',
         dual_track_config: Optional[dict] = None
     ) -> Dict:
 
@@ -972,6 +974,60 @@ class GeneralBacktest:
                 两轨可能出现规模失衡，可通过 `dual_track_config` 中的
                 `imbalance_threshold` 触发同账户内的现金再平衡。
 
+        netting : bool, optional (v1.4.0)，默认 True
+            调仓撮合方式，仅在 execution_order='sell_first' 时生效。
+
+            - True （净额撮合 / netting，历史默认行为）：
+              对于 T-1 与 T 日目标持仓中**重叠的标的**，只交易目标股数与当前
+              股数之**差额**。若目标股数与当前持平，则当日对该标的不产生任何
+              交易，也不收取手续费与滑点。
+
+            - False （毛额撮合 / gross，强制先全卖再买回）：
+              调仓时先把**全部**存量持仓按卖出价清空，再按目标持仓重新买入。
+              重叠标的会产生一笔完整的卖出 + 一笔完整的买入，双边计费计滑点。
+
+            如何选择：
+            当实盘的**卖出时点早于买入时点**、且卖出时尚不知道当日新信号时
+            （例如：T 日 10:26-10:31 清仓、10:39 生成信号、10:41-10:46 建仓），
+            实盘必然是毛额撮合——重叠标的同样被卖出后再买回，账户在
+            10:31→10:41 的"空窗期"是空仓的。此时必须使用 netting=False，
+            否则回测会（a）少计双边费用与滑点，(b) 让重叠标的"穿仓持有"从而
+            虚增空窗期的收益，造成收益归因失真。
+
+            若实盘确实是按差额下单（同一时点净额撮合），则使用 netting=True。
+
+            注意：execution_order='buy_first'（双轨模式）本身就是毛额撮合
+            （跨轨买卖独立执行），该参数在双轨模式下不起作用。
+
+        sizing_price : str, optional (v1.5.0)，默认 'buy_price'
+            **决定目标股数时所使用的定价基准**，仅在 execution_order='sell_first'
+            时生效。此参数用于消除"用当日尚不可知的价格来决定下单量"这一
+            前视偏差（look-ahead bias）。
+
+            - 'buy_price'（默认，历史行为，**存在前视偏差**）：
+                * 组合总资产 `portfolio_value` 按 **T 日收盘价** 给存量持仓估值
+                * 目标股数按 **T 日实际成交价**（buy_price 列，如 10:41 VWAP）折算
+              这两个价格在 T 日盘中下单时刻均不可知。其后果是方向固定有利的
+              隐性择时：当日下跌时 `portfolio_value` 偏小 → 目标股数偏小 →
+              回测"提前知道今天要跌"从而主动降低仓位并多卖；当日上涨时目标
+              超出可用现金，被 cash 约束截回，仍接近满仓。累积效应会显著
+              高估策略收益，并在 metrics 中表现为异常的"平均现金占比"。
+
+            - 'prev_close'（**推荐**）：
+                * 组合总资产按 **T-1 日收盘价** 给存量持仓估值
+                * 目标股数按 **T-1 日收盘价** 折算
+              符合"信号与下单量在盘前即可确定"的真实约束。注意目标股数的
+              **定价**与**实际成交**是解耦的：成交仍按 buy_price 列的当日
+              实际价格撮合，若当日高开导致按 T-1 价算出的股数买不起，会由
+              既有的 cash 约束自然截断并记 constraint_hit='cash'，这正是实盘行为。
+
+              边界回退（逐级）：首个交易日、或个股无 T-1 价（新上市 / 停牌后
+              复牌）时，回退至 buy_price；仍不可用时回退至当日 close。
+              回退次数会在回测结束时打印，便于确认其非普遍现象。
+
+            注意：本参数在 execution_order='buy_first'（双轨模式）下暂未实现，
+            双轨分支目前仍使用 daily_close 估值（已知问题，待后续版本修复）。
+
         dual_track_config : dict, optional (v1.3.0)
             仅当 execution_order='buy_first' 时生效。默认（若为 None）：
                 {
@@ -991,6 +1047,19 @@ class GeneralBacktest:
             raise ValueError(
                 f"execution_order 必须是 'sell_first' 或 'buy_first'，当前传入: {execution_order!r}"
             )
+
+        if sizing_price not in ('buy_price', 'prev_close'):
+            raise ValueError(
+                f"sizing_price 必须是 'buy_price' 或 'prev_close'，当前传入: {sizing_price!r}"
+            )
+
+        if execution_order == 'buy_first' and not netting:
+            print("  - [WARN] netting=False 在 execution_order='buy_first' 下无效："
+                  "双轨模式本身即为毛额撮合，参数被忽略。")
+
+        if execution_order == 'buy_first' and sizing_price != 'buy_price':
+            print(f"  - [WARN] sizing_price={sizing_price!r} 在 execution_order='buy_first' "
+                  "下尚未实现，双轨模式仍使用 daily_close 估值，参数被忽略。")
 
         if execution_order == 'buy_first':
             # 双轨模式：委托到 _run_backtest_dual_track
@@ -1020,6 +1089,9 @@ class GeneralBacktest:
 
         # execution_order == 'sell_first'：保留旧行为
         print("  - Execution mode: sell_first (single-track, legacy)")
+        print(f"  - Matching mode: {'netting (净额撮合)' if netting else 'gross (毛额撮合，强制先卖后买)'}")
+        print(f"  - Sizing price: {sizing_price}"
+              f"{' (T-1 close, no look-ahead)' if sizing_price == 'prev_close' else ' (T-day close/exec price, LOOK-AHEAD BIAS)'}")
 
         self.benchmark_name = benchmark_name
 
@@ -1142,9 +1214,55 @@ class GeneralBacktest:
         volume_constrained_orders = 0
         total_orders = 0
 
+        # v1.5.0：sizing_price='prev_close' 时，统计因缺少 T-1 价而回退的次数
+        sizing_fallback_count = 0
+
+        def _resolve_sizing_price(asset, prev_close_row, date):
+            """
+            返回用于"折算目标股数"的价格，并在必要时记录回退。
+
+            优先级（sizing_price='prev_close'）：
+                T-1 close  →  T 日 buy_price  →  T 日 close
+            sizing_price='buy_price' 时直接返回 T 日 buy_price（旧行为）。
+            返回 None 表示无任何可用价格，调用方应跳过该标的。
+            """
+            nonlocal sizing_fallback_count
+
+            def _buy_px():
+                if asset in p_buy.columns and date in p_buy.index:
+                    v = p_buy.loc[date, asset]
+                    if not pd.isna(v) and v > 0:
+                        return float(v)
+                return None
+
+            if sizing_price == 'buy_price':
+                return _buy_px()
+
+            # sizing_price == 'prev_close'
+            if prev_close_row is not None and asset in prev_close_row.index:
+                v = prev_close_row[asset]
+                if not pd.isna(v) and v > 0:
+                    return float(v)
+
+            # 回退 1：当日 buy price
+            px = _buy_px()
+            if px is not None:
+                sizing_fallback_count += 1
+                return px
+
+            # 回退 2：当日 close
+            if asset in daily_close.index:
+                v = daily_close[asset]
+                if not pd.isna(v) and v > 0:
+                    sizing_fallback_count += 1
+                    return float(v)
+
+            return None
 
         for i, date in enumerate(all_dates):
             daily_close = p_close.loc[date]
+            # T-1 收盘价切片（首日为 None）；用于消除目标股数定价的前视偏差
+            prev_close_row = p_close.loc[all_dates[i - 1]] if i > 0 else None
             is_rebalance = date in rebalance_dates
 
             if is_rebalance:
@@ -1152,21 +1270,42 @@ class GeneralBacktest:
                 target_weights = weights_data[weights_data[date_col] == date].set_index(asset_col)[weight_col].to_dict()
 
                 # 计算调仓前总资产
+                # sizing_price='prev_close' 时按 **T-1 收盘价** 估值，避免用当日
+                # 尚不可知的收盘价决定下单量（前视偏差）。
+                if sizing_price == 'prev_close' and prev_close_row is not None:
+                    val_px_row = prev_close_row
+                else:
+                    val_px_row = daily_close
+
                 portfolio_value = cash
                 for asset, shares in holdings.items():
-                    if asset in daily_close.index and not pd.isna(daily_close[asset]):
-                        portfolio_value += shares * daily_close[asset]
+                    px = np.nan
+                    if asset in val_px_row.index:
+                        px = val_px_row[asset]
+                    # 若 T-1 无价（如停牌后复牌/新上市），逐级回退到当日 close
+                    if pd.isna(px) and asset in daily_close.index:
+                        px = daily_close[asset]
+                    if not pd.isna(px):
+                        portfolio_value += shares * px
 
                 # 计算目标持仓（股数）
+                # 注意：此处仅决定**下单量**，实际成交价仍为 p_buy（当日执行价）。
+                # 二者解耦后，若当日高开导致买不起，会由 cash 约束自然截断。
                 target_holdings = {}
                 for asset, weight in target_weights.items():
-                    if asset in p_buy.columns and date in p_buy.index:
-                        price = p_buy.loc[date, asset]
-                        if not pd.isna(price) and price > 0:
-                            target_value = portfolio_value * weight
-                            target_shares = int(target_value / price / lot_size) * lot_size
-                            if target_shares > 0:
-                                target_holdings[asset] = target_shares
+                    px_size = _resolve_sizing_price(asset, prev_close_row, date)
+                    if px_size is None:
+                        continue
+                    # 仍要求当日有可成交的 buy price，否则无法执行
+                    if not (asset in p_buy.columns and date in p_buy.index):
+                        continue
+                    exec_px = p_buy.loc[date, asset]
+                    if pd.isna(exec_px) or exec_px <= 0:
+                        continue
+                    target_value = portfolio_value * weight
+                    target_shares = int(target_value / px_size / lot_size) * lot_size
+                    if target_shares > 0:
+                        target_holdings[asset] = target_shares
 
                 # ---------- 定义统一的卖出执行函数 ----------
                 def _execute_sell(item):
@@ -1235,14 +1374,16 @@ class GeneralBacktest:
 
                 # 第一步：卖出（先卖出不在目标持仓中的，或需要减仓的）
                 sell_list = []
-                for asset, shares in holdings.items():
-                    target = target_holdings.get(asset, 0)
-                    if shares > target and asset in p_sell.columns and date in p_sell.index:
+                for asset, shares in list(holdings.items()):
+                    # netting=True：只卖出超出目标的差额（净额撮合）
+                    # netting=False：目标视为 0，先全部清仓，随后再按目标买回（毛额撮合）
+                    effective_target = target_holdings.get(asset, 0) if netting else 0
+                    if shares > effective_target and asset in p_sell.columns and date in p_sell.index:
                         price = p_sell.loc[date, asset]
                         if not pd.isna(price) and price > 0:
                             sell_list.append({
                                 'asset': asset,
-                                'sell_shares_needed': shares - target,
+                                'sell_shares_needed': shares - effective_target,
                                 'price': price,
                                 'exec_price': price * (1 - slippage),
                             })
@@ -1476,6 +1617,8 @@ class GeneralBacktest:
         print(f"  - Final NAV: {self.daily_nav.iloc[-1]:,.2f}")
         print(f"  - Final Cash: {cash_series.iloc[-1]:,.2f}")
         print(f"  - Total trades: {len(self.trade_records)}")
+        if sizing_price == 'prev_close':
+            print(f"  - Sizing fallback count (no T-1 price): {sizing_fallback_count:,}")
 
         # 计算基准（如果提供）
         benchmark_nav = None
@@ -1543,6 +1686,8 @@ class GeneralBacktest:
             self.metrics['量约束订单占比'] = 0.0
 
         self.metrics['订单总数'] = int(total_orders)
+        self.metrics['定价基准'] = sizing_price
+        self.metrics['定价回退次数'] = int(sizing_fallback_count)
 
 
         # 整理回测结果
@@ -2192,6 +2337,32 @@ class GeneralBacktest:
             'figure.dpi': 150, # 提高清晰度
             'lines.linewidth': 1.5
         })
+
+    def plot_cash_ratio(self, save_path: str = None) -> None:
+        """Plot daily cash as a fraction of total portfolio NAV.
+
+        Available after ``run_backtest_with_cash``.  The ratio is aligned to
+        the realised daily NAV, so it captures unfilled orders, liquidation
+        periods, and cash-only target dates rather than target weights alone.
+        """
+        cash_series = getattr(self, 'cash_series', None)
+        if cash_series is None or self.daily_nav is None:
+            raise ValueError("plot_cash_ratio requires run_backtest_with_cash first")
+        self._set_plotting_style()
+        frame = pd.concat([cash_series.rename('cash'), self.daily_nav.rename('nav')], axis=1).sort_index().ffill()
+        frame['cash_ratio'] = (frame['cash'] / frame['nav']).replace([np.inf, -np.inf], np.nan).clip(0, 1)
+        frame = frame.dropna(subset=['cash_ratio'])
+        if frame.empty:
+            raise ValueError("no aligned cash/NAV observations available")
+        average, final = frame['cash_ratio'].mean(), frame['cash_ratio'].iloc[-1]
+        fig, ax = plt.subplots(figsize=(14, 5.2))
+        ax.fill_between(frame.index, frame['cash_ratio'].values, 0, color='#2E86AB', alpha=.22)
+        ax.plot(frame.index, frame['cash_ratio'], color='#0B1F3A', linewidth=1.5, label='Daily cash / NAV')
+        ax.axhline(average, color='#D7A93E', linestyle='--', linewidth=1.4, label=f'Average {average:.1%}')
+        ax.scatter(frame.index[-1], final, color='#C73E1D', zorder=3, label=f'Final {final:.1%}')
+        ax.set(title='Daily Cash Allocation', ylabel='Cash as % of NAV', xlabel='Date', ylim=(0, 1))
+        ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0)); ax.legend(frameon=False, loc='upper left')
+        fig.tight_layout(); _display_plot(save_path)
         
     def plot_nav_curve(self, figsize: Tuple[int, int] = (14, 8),
                        title: str = "Strategy Performance Analysis",
