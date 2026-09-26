@@ -31,7 +31,7 @@ Based on current implementation:
 
 1. `run_backtest(...)` requires `adj_factor_col` and internally computes adjusted buy/sell/close prices.
 2. `run_backtest_with_cash(...)` does not use `adj_factor_col`; it simulates holdings in shares and cash.
-3. `run_backtest_ETF(...)` / `run_backtest_stock(...)` fetch daily data from DB and call `run_backtest(...)`.
+3. `run_backtest_ETF(...)` / `run_backtest_stock(...)` require a caller-supplied `table_name`, fetch daily data from DB, and call `run_backtest(...)`.
 4. `plot_all()` is an alias of `plot_dashboard()`.
 5. `plot_nav_curve(log_scale=True)` and `plot_nav_curve_dual()` are supported.
 6. `TBacktest.run_t0_backtest(...)` handles same-day sell → buy cycles. Weights use **target position** semantics. The `phase` column ('sell' | 'buy') controls intraday execution order. A-share compliance is enforced: buy must follow sell; net sell ≤ net buy each day.
@@ -134,6 +134,7 @@ Use when strategy requires execution realism:
 - minimum lot size
 - partial fill due to cash shortage
 - order priority (`trade_critic`)
+- daily total exposure control (`position_ratio_col`, default total exposure is 1)
 
 Recommended default parameters:
 

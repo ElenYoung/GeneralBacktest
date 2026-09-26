@@ -92,7 +92,9 @@ bt.plot_all()
 
 ### 总仓位控制
 
-通过 `position_ratio_col` 在每个调仓日设置总仓位比例。例如 `position_ratio = 0.8` 表示股票总仓位 80%，现金 20%。
+通过 `position_ratio_col` 在每个调仓日设置总仓位比例。例如 `position_ratio = 0.8`
+表示股票总仓位 80%，现金 20%。`run_backtest()` 和 `run_backtest_with_cash()`
+（包括双轨模式）均支持该参数；未传入时总仓位默认为 1。
 
 ### 现金仓位回测
 
@@ -102,6 +104,19 @@ bt.plot_all()
 - 现金约束（现金不足不能买入）
 - 交易优先级策略
 - **可成交量约束**（v1.2.0 新增）
+- dashboard 指标表中的平均换手率
+
+```python
+results = bt.run_backtest_with_cash(
+    weights_data=weights_data,  # 每日各行可包含相同的 position_ratio
+    price_data=price_data,
+    initial_capital=1_000_000,
+    buy_price='open',
+    sell_price='close',
+    close_price_col='close',
+    position_ratio_col='position_ratio',
+)
+```
 
 #### 可成交量约束（v1.2.0）
 
@@ -240,6 +255,9 @@ T+0 专用指标：卖出胜率、买入胜率、卖出/买入累计收益、收
 - `TBacktest.run_t0_backtest(...)` — T+0 日内回转回测（v1.2.0）
 - `print_metrics()`
 - `plot_all()` 及其他图表方法
+
+数据库便捷接口不再内置任何表名，调用时请显式传入自己的
+`table_name='schema.table'`。
 
 ## 向后兼容性
 

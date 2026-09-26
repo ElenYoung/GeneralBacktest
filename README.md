@@ -140,7 +140,8 @@ results = bt.run_backtest_with_cash(
     lot_size=100,
     trade_critic="weight_desc",
     transaction_cost=[0.001, 0.001],
-    slippage=0.001
+    slippage=0.001,
+    position_ratio_col="position_ratio",  # optional; defaults to total exposure 1.0
 )
 
 print(f"Final NAV: {results['nav_series'].iloc[-1]:,.2f}")
@@ -228,7 +229,10 @@ behavior is identical to v1.2.x.
 
 ### ETF Database Backtest (Requires DB Config)
 
-`run_backtest_ETF()` and `run_backtest_stock()` need a valid database config. For general usage, `run_backtest()` is recommended.
+`run_backtest_ETF()` and `run_backtest_stock()` need a valid database config and a
+caller-supplied `table_name` (for example, `table_name="market.daily_prices"`). No
+database table name is built into the package. For general usage, `run_backtest()`
+is recommended.
 
 ### T+0 Intraday Round-Trip (`TBacktest`)
 
@@ -302,6 +306,7 @@ Example:
 The framework includes return, risk, risk-adjusted, tail-risk, relative, and turnover metrics.
 Cash-specific metrics in `run_backtest_with_cash()` include:
 
+- `平均换手率` (`Avg Turnover` in the dashboard)
 - `Final Cash`
 - `Cash Ratio`
 - `Avg Cash Ratio`

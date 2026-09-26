@@ -3,9 +3,11 @@
 支持灵活的调仓时间、向量化计算、丰富的性能指标和可视化功能
 """
 
-import numpy as np
+import re
 from typing import Optional, Dict, List, Tuple
 import warnings
+
+import numpy as np
 
 # 动态导入 pandas（解决 Windows 兼容性问题）
 try:
@@ -57,6 +59,56 @@ def _display_plot(save_path: str = None, show: bool = False) -> None:
         plt.show()
     else:
         plt.close()  # Just close if not saving or showing
+
+
+def _validate_table_name(table_name: Optional[str], parameter_name: str = 'table_name') -> str:
+    """Validate a caller-provided, optionally schema-qualified SQL table name."""
+    if not table_name:
+        raise ValueError(
+            f"`{parameter_name}` is required; database table names are not built into GeneralBacktest."
+        )
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*', table_name):
+        raise ValueError(
+            f"Invalid `{parameter_name}`: {table_name!r}. "
+            "Use an identifier such as 'schema.table'."
+        )
+    return table_name
+
+
+def _normalize_weights_with_position_ratio(
+    weights_data: pd.DataFrame,
+    date_col: str,
+    weight_col: str,
+    position_ratio_col: Optional[str],
+) -> pd.DataFrame:
+    """Normalize daily asset weights and apply the requested total exposure."""
+    weights_sum = weights_data.groupby(date_col)[weight_col].transform('sum')
+    normalized = np.where(
+        weights_sum == 0,
+        0.0,
+        weights_data[weight_col] / weights_sum,
+    )
+
+    if position_ratio_col is None:
+        weights_data[weight_col] = normalized
+        return weights_data
+
+    ratios = pd.to_numeric(weights_data[position_ratio_col], errors='coerce')
+    if ratios.isna().any() or (~np.isfinite(ratios)).any():
+        raise ValueError(f"`{position_ratio_col}` must contain finite numeric values.")
+    if ((ratios < 0) | (ratios > 1)).any():
+        raise ValueError(f"`{position_ratio_col}` must be within [0, 1].")
+
+    ratio_counts = weights_data.assign(_position_ratio=ratios).groupby(date_col)['_position_ratio'].nunique()
+    inconsistent_dates = ratio_counts[ratio_counts > 1].index
+    if len(inconsistent_dates) > 0:
+        dates = ', '.join(pd.Timestamp(d).strftime('%Y-%m-%d') for d in inconsistent_dates[:3])
+        raise ValueError(
+            f"`{position_ratio_col}` must have one value per date; inconsistent dates: {dates}."
+        )
+
+    weights_data[weight_col] = normalized * ratios.to_numpy()
+    return weights_data
 
 
 class GeneralBacktest:
@@ -303,25 +355,10 @@ class GeneralBacktest:
         price_data['adj_sell_price'] = price_data[sell_price] * price_data[adj_factor_col]
         price_data['adj_close_price'] = price_data[close_price_col] * price_data[adj_factor_col]
 
-        # 权重归一化处理
-        weights_sum = weights_data.groupby(date_col)[weight_col].transform('sum')
-
-        if position_ratio_col is not None:
-            # 使用 position_ratio_col 指定的仓位比例
-            # 先归一化到1，再乘以每日的 position_ratio
-            position_ratio = weights_data[position_ratio_col]
-            weights_data[weight_col] = np.where(
-                weights_sum == 0,
-                0.0,
-                weights_data[weight_col] / weights_sum * position_ratio
-            )
-        else:
-            # 默认满仓：归一化到1
-            weights_data[weight_col] = np.where(
-                weights_sum == 0,
-                0.0,
-                weights_data[weight_col] / weights_sum
-            )
+        # 先归一化资产权重，再应用每日总仓位比例（未指定时为 100%）。
+        weights_data = _normalize_weights_with_position_ratio(
+            weights_data, date_col, weight_col, position_ratio_col
+        )
 
         # 基准权重始终使用满仓（归一化到1）
         if benchmark_weights is not None:
@@ -762,8 +799,10 @@ class GeneralBacktest:
         slippage: float = 0.0,
         position_ratio_col: Optional[str] = None,
         benchmark_weights: pd.DataFrame = None,
-        benchmark_name: str = "Benchmark"
+        benchmark_name: str = "Benchmark",
+        table_name: Optional[str] = None,
         ):
+        table_name = _validate_table_name(table_name)
         from quantchdb import ClickHouseDatabase
 
         db = ClickHouseDatabase(config=etf_db_config, terminal_log=False)
@@ -772,7 +811,7 @@ class GeneralBacktest:
         WITH
             prices as (
                 SELECT code, date, open, close, amount/vol as vwap, adj_factor
-                FROM etf.etf_day daily
+                FROM {table_name} daily
                 WHERE and(date>='{self.start_date.strftime(format='%Y-%m-%d')}',
                           date<='{self.end_date.strftime(format='%Y-%m-%d')}')
                 ORDER BY code, date
@@ -811,8 +850,10 @@ class GeneralBacktest:
         slippage: float = 0.0,
         position_ratio_col: Optional[str] = None,
         benchmark_weights: pd.DataFrame = None,
-        benchmark_name: str = "Benchmark"
+        benchmark_name: str = "Benchmark",
+        table_name: Optional[str] = None,
         ):
+        table_name = _validate_table_name(table_name)
         from quantchdb import ClickHouseDatabase
 
         db = ClickHouseDatabase(config=stock_db_config, terminal_log=False)
@@ -822,7 +863,7 @@ class GeneralBacktest:
         WITH
             prices as (
                 SELECT  *
-                FROM stocks.daily_adj_tushare
+                FROM {table_name}
                 WHERE and(date>='{self.start_date.strftime(format='%Y-%m-%d')}', 
                           date<='{self.end_date.strftime(format='%Y-%m-%d')}')
                 ORDER BY code, date
@@ -875,7 +916,8 @@ class GeneralBacktest:
         execution_order: str = 'sell_first',
         netting: bool = True,
         sizing_price: str = 'buy_price',
-        dual_track_config: Optional[dict] = None
+        dual_track_config: Optional[dict] = None,
+        position_ratio_col: Optional[str] = None,
     ) -> Dict:
 
         """
@@ -907,6 +949,9 @@ class GeneralBacktest:
             资产代码列名
         weight_col : str
             权重列名
+        position_ratio_col : str, optional
+            每个调仓日的总仓位比例列名，取值范围为 [0, 1]。先将当日标的权重
+            归一化，再乘以该比例；未指定时默认为 1（满仓）。同一日期的值必须一致。
         lot_size : int
             每手股数，默认100（A股)
         trade_critic : str
@@ -1085,6 +1130,7 @@ class GeneralBacktest:
                 benchmark_weights=benchmark_weights,
                 benchmark_name=benchmark_name,
                 dual_track_config=dual_track_config or {},
+                position_ratio_col=position_ratio_col,
             )
 
         # execution_order == 'sell_first'：保留旧行为
@@ -1097,7 +1143,10 @@ class GeneralBacktest:
 
 
         # 数据验证和预处理
-        validate_data(weights_data, [date_col, asset_col, weight_col], "weights_data")
+        required_weight_cols = [date_col, asset_col, weight_col]
+        if position_ratio_col is not None:
+            required_weight_cols.append(position_ratio_col)
+        validate_data(weights_data, required_weight_cols, "weights_data")
         validate_data(price_data, [date_col, asset_col, buy_price, sell_price, close_price_col], "price_data")
 
         weights_data = weights_data.copy()
@@ -1115,9 +1164,9 @@ class GeneralBacktest:
             (price_data[date_col] <= self.end_date)
         ]
 
-        # 权重归一化到1
-        weights_sum = weights_data.groupby(date_col)[weight_col].transform('sum')
-        weights_data[weight_col] = np.where(weights_sum == 0, 0.0, weights_data[weight_col] / weights_sum)
+        weights_data = _normalize_weights_with_position_ratio(
+            weights_data, date_col, weight_col, position_ratio_col
+        )
 
         # 获取所有交易日和调仓日
         all_dates = sorted(price_data[date_col].unique())
@@ -1666,7 +1715,11 @@ class GeneralBacktest:
         self.metrics = calculate_all_metrics(
             nav_series=self.daily_nav,
             benchmark_nav=benchmark_nav,
-            trade_dates=rebalance_dates
+            trade_dates=rebalance_dates,
+            turnover_series=(
+                self.turnover_records['turnover']
+                if not self.turnover_records.empty else None
+            ),
         )
 
         # 添加现金相关指标
@@ -1696,6 +1749,7 @@ class GeneralBacktest:
             'cash_series': cash_series,
             'positions_df': self.daily_positions,
             'trade_records': self.trade_records,
+            'turnover_records': self.turnover_records,
             'metrics': self.metrics,
             'benchmark_nav': benchmark_nav
         }
@@ -1729,6 +1783,7 @@ class GeneralBacktest:
         benchmark_weights: Optional[pd.DataFrame],
         benchmark_name: str,
         dual_track_config: dict,
+        position_ratio_col: Optional[str],
     ) -> Dict:
         """
         双轨（dual-track）现金回测实现（v1.3.0）。
@@ -1785,7 +1840,10 @@ class GeneralBacktest:
         self.benchmark_name = benchmark_name
 
         # ---------- 数据验证和预处理（与单轨一致） ----------
-        validate_data(weights_data, [date_col, asset_col, weight_col], "weights_data")
+        required_weight_cols = [date_col, asset_col, weight_col]
+        if position_ratio_col is not None:
+            required_weight_cols.append(position_ratio_col)
+        validate_data(weights_data, required_weight_cols, "weights_data")
         validate_data(
             price_data,
             [date_col, asset_col, buy_price, sell_price, close_price_col],
@@ -1806,10 +1864,8 @@ class GeneralBacktest:
             (price_data[date_col] <= self.end_date)
         ]
 
-        # 权重归一化到 1
-        weights_sum = weights_data.groupby(date_col)[weight_col].transform('sum')
-        weights_data[weight_col] = np.where(
-            weights_sum == 0, 0.0, weights_data[weight_col] / weights_sum
+        weights_data = _normalize_weights_with_position_ratio(
+            weights_data, date_col, weight_col, position_ratio_col
         )
 
         all_dates = sorted(price_data[date_col].unique())
@@ -2256,6 +2312,10 @@ class GeneralBacktest:
             nav_series=self.daily_nav,
             benchmark_nav=benchmark_nav,
             trade_dates=rebalance_dates,
+            turnover_series=(
+                self.turnover_records['turnover']
+                if not self.turnover_records.empty else None
+            ),
         )
 
         # 现金相关指标
@@ -2290,6 +2350,7 @@ class GeneralBacktest:
             'cash_series': cash_series,
             'positions_df': self.daily_positions,
             'trade_records': self.trade_records,
+            'turnover_records': self.turnover_records,
             'metrics': self.metrics,
             'benchmark_nav': benchmark_nav,
             'track_a': {
@@ -3064,6 +3125,7 @@ class GeneralBacktest:
 
         # 如果有现金仓位数据，添加现金相关指标
         if has_cash:
+            key_metrics.append(['Avg Turnover', f"{self.metrics.get('平均换手率', 0):.2%}"])
             key_metrics.append(['Final Cash Ratio', f"{self.metrics.get('最终现金占比', 0):.2%}"])
             key_metrics.append(['Avg Cash Ratio', f"{self.metrics.get('平均现金占比', 0):.2%}"])
 

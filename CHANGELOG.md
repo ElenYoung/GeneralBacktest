@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file.
 
+## Unreleased
+
+### Added
+
+- `run_backtest_with_cash()` 新增 `position_ratio_col`，支持单轨与双轨模式按调仓日
+  控制总仓位；未指定时保持 100% 目标仓位。
+- 现金回测指标及 dashboard 指标表新增平均换手率。
+
+### Changed
+
+- `run_backtest_ETF()` / `run_backtest_stock()` 不再硬编码数据库表名，改由调用方
+  通过 `table_name` 显式传入，并校验表名格式。
+
 ## [1.5.0] - 2026-08-26
 
 ### Fixed
