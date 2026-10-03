@@ -918,6 +918,8 @@ class GeneralBacktest:
         sizing_price: str = 'buy_price',
         dual_track_config: Optional[dict] = None,
         position_ratio_col: Optional[str] = None,
+        share_adjustment_col: Optional[str] = None,
+        adjusted_prev_close_col: Optional[str] = None,
     ) -> Dict:
 
         """
@@ -1102,6 +1104,11 @@ class GeneralBacktest:
             print("  - [WARN] netting=False 在 execution_order='buy_first' 下无效："
                   "双轨模式本身即为毛额撮合，参数被忽略。")
 
+        if execution_order == 'buy_first' and (share_adjustment_col or adjusted_prev_close_col):
+            raise NotImplementedError(
+                "corporate-action adjustment is currently supported only for execution_order='sell_first'"
+            )
+
         if execution_order == 'buy_first' and sizing_price != 'buy_price':
             print(f"  - [WARN] sizing_price={sizing_price!r} 在 execution_order='buy_first' "
                   "下尚未实现，双轨模式仍使用 daily_close 估值，参数被忽略。")
@@ -1147,7 +1154,12 @@ class GeneralBacktest:
         if position_ratio_col is not None:
             required_weight_cols.append(position_ratio_col)
         validate_data(weights_data, required_weight_cols, "weights_data")
-        validate_data(price_data, [date_col, asset_col, buy_price, sell_price, close_price_col], "price_data")
+        required_price_cols = [date_col, asset_col, buy_price, sell_price, close_price_col]
+        if share_adjustment_col is not None:
+            required_price_cols.append(share_adjustment_col)
+        if adjusted_prev_close_col is not None:
+            required_price_cols.append(adjusted_prev_close_col)
+        validate_data(price_data, required_price_cols, "price_data")
 
         weights_data = weights_data.copy()
         price_data = price_data.copy()
@@ -1179,6 +1191,16 @@ class GeneralBacktest:
         p_close = price_data.pivot(index=date_col, columns=asset_col, values=close_price_col)
         p_buy = price_data.pivot(index=date_col, columns=asset_col, values=buy_price)
         p_sell = price_data.pivot(index=date_col, columns=asset_col, values=sell_price)
+        p_share_adjustment = None
+        if share_adjustment_col is not None:
+            p_share_adjustment = price_data.pivot(
+                index=date_col, columns=asset_col, values=share_adjustment_col
+            ).fillna(1.0)
+        p_adjusted_prev_close = None
+        if adjusted_prev_close_col is not None:
+            p_adjusted_prev_close = price_data.pivot(
+                index=date_col, columns=asset_col, values=adjusted_prev_close_col
+            )
 
         # ---------- volume_data 预处理 ----------
         # 判定是否施加量约束以及买/卖是否共用同一上限
@@ -1310,8 +1332,19 @@ class GeneralBacktest:
 
         for i, date in enumerate(all_dates):
             daily_close = p_close.loc[date]
+            # Reinvest ex-date corporate actions before any same-day sell/buy.
+            # The ratio is previous raw close / ex-date adjusted pre-close.
+            if p_share_adjustment is not None:
+                adjustment_row = p_share_adjustment.loc[date]
+                for asset, shares in list(holdings.items()):
+                    ratio = adjustment_row.get(asset, 1.0)
+                    if pd.notna(ratio) and np.isfinite(ratio) and ratio > 0 and abs(ratio - 1.0) > 1e-10:
+                        holdings[asset] = shares * float(ratio)
             # T-1 收盘价切片（首日为 None）；用于消除目标股数定价的前视偏差
-            prev_close_row = p_close.loc[all_dates[i - 1]] if i > 0 else None
+            if p_adjusted_prev_close is not None and date in p_adjusted_prev_close.index:
+                prev_close_row = p_adjusted_prev_close.loc[date]
+            else:
+                prev_close_row = p_close.loc[all_dates[i - 1]] if i > 0 else None
             is_rebalance = date in rebalance_dates
 
             if is_rebalance:
