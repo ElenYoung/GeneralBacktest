@@ -1333,7 +1333,7 @@ class GeneralBacktest:
         for i, date in enumerate(all_dates):
             daily_close = p_close.loc[date]
             # Reinvest ex-date corporate actions before any same-day sell/buy.
-            # The ratio is previous raw close / ex-date adjusted pre-close.
+            # The ratio comes from the stock's cumulative adjustment-factor change.
             if p_share_adjustment is not None:
                 adjustment_row = p_share_adjustment.loc[date]
                 for asset, shares in list(holdings.items()):
