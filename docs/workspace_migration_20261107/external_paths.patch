@@ -1,0 +1,11 @@
+--- a/FactorMiner/AgenticFactorMiner/docs/POSITIONING_REPORT.md
++++ b/FactorMiner/AgenticFactorMiner/docs/POSITIONING_REPORT.md
+@@ -431,7 +431,7 @@
+ |---|---|---|
+ | [DatabaseFactors](../../Database/DatabaseFactors/README.md) | 文档描述 T-1 日频基础因子及行情／基本指标连接 | 实际代码与数据的时点、单位、复权、证券编码和覆盖范围；作为已有因子比较库 |
+ | [DatabaseLabels](../../Database/DatabaseLabels/README.md) | 文档描述前瞻收益、日内窗口及容量表 | 逐个标签的信号、买卖、顺延与持有规则；明确标签与容量数据的权限差异 |
+-| [GeneralBacktest](../../GeneralBacktest/README.md) | 文档及入口提供权重到交易／净值、成本与滑点等能力 | 用简单组合核对价格口径、费用和执行时点；另外核实涨跌停、停牌及容量处理是否满足课题 |
++| [GeneralBacktest](../../../QuantPackages/GeneralBacktest/README.md) | 文档及入口提供权重到交易／净值、成本与滑点等能力 | 用简单组合核对价格口径、费用和执行时点；另外核实涨跌停、停牌及容量处理是否满足课题 |
+ 
+ 本报告未查询这些设施的数据库现状，也未全面审计其实现。文档中的历史“最新日期”、因子数量和迁移说明不能直接作为当前事实。接入时应读取实际 schema、运行验证入口，并把通过验证的协议与数据版本登记为产物。
+ 

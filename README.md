@@ -389,3 +389,9 @@ Elen Young - yang13515360252@163.com
 ## Disclaimer
 
 This framework is for research and educational purposes only and does not constitute investment advice.
+
+
+## Local workspace location
+
+Since 2026-11-07, this independent Git repository lives at
+`D:/LightQuantSystem/QuantPackages/GeneralBacktest`. Its Git history and remotes are preserved.
